@@ -1,0 +1,43 @@
+# --- project root -----------------------------------------------------------
+.env
+.env.local
+.env.*.local
+storage/
+*.log
+logs/
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- node / next ------------------------------------------------------------
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+frontend/.env.local
+
+# --- editors / os -----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- hermes -----------------------------------------------------------------
+.hermes/
+
+# --- local verification scratch ---------------------------------------------
+.verify_tmp/
+.verify_front.html
+backend/.tmp_db/
+.build_backend.log
+.build_frontend.log
