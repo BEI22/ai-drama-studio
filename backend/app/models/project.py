@@ -32,6 +32,11 @@ class Project(Base, TimestampMixin):
     style: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Raw story input (PRD section 5.2: 故事来源 + 故事文本). Phase 2 stores it
+    # verbatim; Phase 3's Story Agent turns it into ``story_bible_json``.
+    story_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    story_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Structured Story Bible (PRD section 6). Never free-form text.
     story_bible_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 

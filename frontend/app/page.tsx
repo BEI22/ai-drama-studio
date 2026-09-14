@@ -1,212 +1,256 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-type HealthState =
-  | { kind: "loading" }
-  | { kind: "up"; version: string; latencyMs: number }
-  | { kind: "degraded"; version: string; detail: string }
-  | { kind: "down"; detail: string };
+import { useAuth } from "@/components/auth-provider";
+import { EmptyState, ErrorState, LoadingState, SignInRequired } from "@/components/states";
+import { api, ApiError, type ProjectListItem, type ProjectStatus } from "@/lib/api";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+const STATUS_STYLES: Record<ProjectStatus, string> = {
+  DRAFT: "border-ink-600 bg-ink-850 text-slate-400",
+  ACTIVE: "border-accent-500/40 bg-accent-500/10 text-accent-400",
+  ARCHIVED: "border-amber-500/40 bg-amber-500/10 text-amber-400",
+  FAILED: "border-rose-500/40 bg-rose-500/10 text-rose-400",
+};
 
-/**
- * Phase 1 acceptance surface: proves the browser can reach the FastAPI backend
- * through the unified response envelope, and surfaces failures honestly instead
- * of silently rendering an empty page.
- */
-export default function HomePage() {
-  const [health, setHealth] = useState<HealthState>({ kind: "loading" });
+const STATUS_LABELS: Record<ProjectStatus, string> = {
+  DRAFT: "草稿",
+  ACTIVE: "进行中",
+  ARCHIVED: "已归档",
+  FAILED: "失败",
+};
+
+const PAGE_SIZE = 12;
+
+export default function DashboardPage() {
+  const { user, initializing } = useAuth();
+
+  const [items, setItems] = useState<ProjectListItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(0);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<ProjectStatus | "">("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api.listProjects({
+        page,
+        pageSize: PAGE_SIZE,
+        search: query || undefined,
+        status: status || undefined,
+      });
+      setItems(result.items);
+      setTotal(result.total);
+      setPages(result.pages);
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught
+          : new ApiError("加载项目列表失败", { code: "UNKNOWN", status: 0, requestId: null }),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [page, query, status]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    if (initializing || !user) return;
+    void load();
+  }, [initializing, user, load]);
 
-    async function probe() {
-      const started = performance.now();
-      try {
-        const response = await fetch(`${API_BASE_URL}/health/detail`, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        const latencyMs = Math.round(performance.now() - started);
-        const body = await response.json();
+  // Debounce the search box so we don't fire a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-        if (!response.ok || body?.success !== true) {
-          setHealth({
-            kind: "down",
-            detail: body?.error?.message ?? `HTTP ${response.status}`,
-          });
-          return;
-        }
+  const heading = useMemo(
+    () => (
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">我的项目</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            {total > 0 ? `共 ${total} 个项目` : "从一段故事开始，产出一集成片。"}
+          </p>
+        </div>
+        <Link href="/projects/new" className="btn-primary">
+          + 创建项目
+        </Link>
+      </div>
+    ),
+    [total],
+  );
 
-        const status: string = body.data?.status ?? "unknown";
-        if (status === "ok") {
-          setHealth({ kind: "up", version: body.data.version, latencyMs });
-        } else {
-          const unhealthy = (body.data.components ?? [])
-            .filter((component: { status: string }) => component.status !== "up")
-            .map((component: { name: string; status: string }) => `${component.name}=${component.status}`)
-            .join(", ");
-          setHealth({
-            kind: "degraded",
-            version: body.data.version,
-            detail: unhealthy || "unknown",
-          });
-        }
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setHealth({
-          kind: "down",
-          detail: error instanceof Error ? error.message : "network error",
-        });
-      }
-    }
-
-    void probe();
-    return () => controller.abort();
-  }, []);
+  if (initializing || !user) {
+    return (
+      <div className="space-y-6">
+        {heading}
+        <SignInRequired what="我的项目" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-10">
-      <section className="space-y-5">
-        <span className="badge border-ink-600 bg-ink-850 text-slate-400">
-          Phase 1 · 工程基础
-        </span>
-        <h1 className="text-4xl font-semibold leading-tight text-white sm:text-5xl">
-          从一段故事，
-          <br className="hidden sm:block" />
-          到一集成片。
-        </h1>
-        <p className="max-w-2xl text-base leading-relaxed text-slate-400">
-          AI Studio 是一条 <span className="text-slate-200">AI 漫剧生产流水线</span>：
-          故事 → 剧本 → 分镜 → 图片 → 视频 → 配音 → 字幕 → FFmpeg 合成 MP4。
-          第一版目标是端到端跑通并可演示，而不是功能堆砌。
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <button type="button" className="btn-primary" disabled title="Phase 2 实现">
-            创建项目
-            <span className="text-xs opacity-70">(Phase 2)</span>
-          </button>
-          <a className="btn-ghost" href={`${API_BASE_URL}/../docs`} target="_blank" rel="noreferrer">
-            API 文档
-          </a>
-        </div>
-      </section>
+    <div className="space-y-6">
+      {heading}
 
-      <section className="grid gap-4 sm:grid-cols-2">
-        <BackendStatusCard health={health} />
-        <PipelineCard />
-      </section>
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="按项目名称搜索…"
+          aria-label="搜索项目"
+          className="min-w-[16rem] flex-1 rounded-lg border border-ink-600 bg-ink-900 px-3 py-2 text-sm
+            text-slate-200 placeholder:text-slate-600 focus:border-brand-500 focus:outline-none"
+        />
+        <select
+          value={status}
+          onChange={(event) => {
+            setStatus(event.target.value as ProjectStatus | "");
+            setPage(1);
+          }}
+          aria-label="按状态筛选"
+          className="rounded-lg border border-ink-600 bg-ink-900 px-3 py-2 text-sm text-slate-200
+            focus:border-brand-500 focus:outline-none"
+        >
+          <option value="">全部状态</option>
+          {(Object.keys(STATUS_LABELS) as ProjectStatus[]).map((key) => (
+            <option key={key} value={key}>
+              {STATUS_LABELS[key]}
+            </option>
+          ))}
+        </select>
+      </div>
 
-      <section className="space-y-3">
-        <div className="flex items-end justify-between">
-          <h2 className="text-lg font-medium text-white">我的项目</h2>
-          <span className="label-caps">{"项目列表 · Phase 2"}</span>
+      {loading ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <LoadingState />
+          <LoadingState />
+          <LoadingState />
         </div>
-        <div className="panel flex flex-col items-center justify-center gap-2 px-6 py-14 text-center">
-          <p className="text-sm text-slate-400">还没有项目</p>
-          <p className="max-w-md text-xs leading-relaxed text-slate-500">
-            项目 CRUD、故事输入与 Story Bible 展示将在 Phase 2 / Phase 3 接入。
-            Phase 1 只交付可运行的工程底座：数据库、迁移、统一响应、request_id、健康检查。
-          </p>
-          <Link className="mt-2 text-xs text-brand-400 hover:text-brand-500" href="#pipeline">
-            查看流水线进度 ↓
-          </Link>
-        </div>
-      </section>
+      ) : error ? (
+        <ErrorState error={error} onRetry={load} />
+      ) : items.length === 0 ? (
+        query || status ? (
+          <EmptyState
+            title="没有匹配的项目"
+            description="换个关键词或清除筛选条件再试。"
+            action={
+              <button
+                type="button"
+                className="btn-ghost mt-1"
+                onClick={() => {
+                  setSearch("");
+                  setQuery("");
+                  setStatus("");
+                  setPage(1);
+                }}
+              >
+                清除筛选
+              </button>
+            }
+          />
+        ) : (
+          <EmptyState
+            title="还没有项目"
+            description="创建一个项目并粘贴你的故事梗概，AI 会自动解析世界观、人物与场景，进而生成剧本与分镜。"
+            action={
+              <Link href="/projects/new" className="btn-primary mt-1">
+                创建第一个项目
+              </Link>
+            }
+          />
+        )
+      ) : (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {items.map((project) => (
+              <ProjectCard key={project.id} project={project} />
+            ))}
+          </div>
+
+          {pages > 1 ? (
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span>
+                第 {page} / {pages} 页
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  disabled={page <= 1}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                >
+                  上一页
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs"
+                  disabled={page >= pages}
+                  onClick={() => setPage((value) => Math.min(pages, value + 1))}
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
 
-function BackendStatusCard({ health }: { health: HealthState }) {
-  const tone =
-    health.kind === "up"
-      ? "border-accent-500/40 bg-accent-500/10 text-accent-400"
-      : health.kind === "degraded"
-        ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
-        : health.kind === "down"
-          ? "border-rose-500/40 bg-rose-500/10 text-rose-400"
-          : "border-ink-600 bg-ink-850 text-slate-400";
-
-  const text =
-    health.kind === "loading"
-      ? "检查中…"
-      : health.kind === "up"
-        ? "后端正常"
-        : health.kind === "degraded"
-          ? "部分依赖不可用"
-          : "后端不可达";
-
+function ProjectCard({ project }: { project: ProjectListItem }) {
   return (
-    <div className="panel p-5">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-slate-200">后端连通性</h3>
-        <span className={`badge ${tone}`}>
-          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-          {text}
+    <Link
+      href={`/projects/${project.id}`}
+      className="panel group flex flex-col gap-4 p-5 transition-colors hover:border-brand-500/50"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="line-clamp-1 text-base font-medium text-white group-hover:text-brand-400">
+          {project.name}
+        </h2>
+        <span className={`badge shrink-0 ${STATUS_STYLES[project.status]}`}>
+          {STATUS_LABELS[project.status]}
         </span>
       </div>
 
-      <dl className="mt-4 space-y-2 font-mono text-xs text-slate-400">
-        <div className="flex justify-between gap-4">
-          <dt className="text-slate-500">endpoint</dt>
-          <dd className="truncate">{API_BASE_URL}/health/detail</dd>
-        </div>
-        {health.kind === "up" || health.kind === "degraded" ? (
-          <>
-            <div className="flex justify-between gap-4">
-              <dt className="text-slate-500">version</dt>
-              <dd>{health.version}</dd>
-            </div>
-            {health.kind === "up" ? (
-              <div className="flex justify-between gap-4">
-                <dt className="text-slate-500">latency</dt>
-                <dd>{health.latencyMs} ms</dd>
-              </div>
-            ) : (
-              <div className="flex justify-between gap-4">
-                <dt className="text-slate-500">unhealthy</dt>
-                <dd className="text-amber-400">{health.detail}</dd>
-              </div>
-            )}
-          </>
-        ) : null}
-        {health.kind === "down" ? (
-          <div className="flex flex-col gap-1">
-            <dt className="text-slate-500">error</dt>
-            <dd className="whitespace-pre-wrap break-words text-rose-400">{health.detail}</dd>
-          </div>
-        ) : null}
-      </dl>
-    </div>
+      <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-slate-500">
+        {project.description || project.genre || "暂无简介"}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-slate-500">
+        <span>已生成 {project.episode_count} 集</span>
+        <span>{project.has_story ? "已录入故事" : "缺故事"}</span>
+      </div>
+
+      <div className="mt-auto flex items-center justify-between border-t border-ink-800 pt-3 text-[11px] text-slate-600">
+        <span>更新于 {formatDateTime(project.updated_at)}</span>
+        {project.genre ? <span className="text-slate-500">{project.genre}</span> : null}
+      </div>
+    </Link>
   );
 }
 
-const PIPELINE = [
-  { label: "Story → Script", done: false },
-  { label: "Storyboard", done: false },
-  { label: "Image", done: false },
-  { label: "Video", done: false },
-  { label: "TTS", done: false },
-  { label: "Compose (FFmpeg)", done: false },
-];
-
-function PipelineCard() {
-  return (
-    <div id="pipeline" className="panel p-5">
-      <h3 className="text-sm font-medium text-slate-200">生产流水线</h3>
-      <ul className="mt-4 space-y-2 text-xs">
-        {PIPELINE.map((step) => (
-          <li key={step.label} className="flex items-center justify-between gap-4">
-            <span className="text-slate-400">{step.label}</span>
-            <span className="badge border-ink-600 bg-ink-850 text-slate-500">
-              {step.done ? "完成" : "待开发"}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

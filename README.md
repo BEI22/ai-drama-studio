@@ -6,8 +6,9 @@
 故事 → 剧本 → 分镜 → 图片 → 视频 → 配音 → 字幕/BGM → 成片
 ```
 
-> 当前状态：**Phase 1（工程基础）已完成**。
-> 尚未接入任何真实 AI Provider（`*_PROVIDER=mock`），这是刻意为之 —— 先把地基跑通。
+> 当前状态：**Phase 2（项目系统）已完成**。
+> 已实现认证、项目 CRUD、故事文本录入与项目浏览。
+> 尚未接入任何真实 AI Provider（`*_PROVIDER=mock`），故事解析属于 Phase 3 —— 这是刻意为之。
 
 - 产品需求与开发规范：[docs/PRD.md](docs/PRD.md)
 - 技术设计与分层规则：[docs/TDD.md](docs/TDD.md)
@@ -34,19 +35,19 @@
 ```
 ai-studio/
 ├── frontend/                  # Next.js
-│   ├── app/                   # layout / 首页
-│   ├── components/            # Navbar、Loading/Empty/Error 状态组件
-│   ├── hooks/                 # use-async
-│   ├── lib/api.ts             # 唯一 fetch 出口 + Envelope 解包
+│   ├── app/                   # 首页(项目列表) / login / projects/new / projects/[id]
+│   ├── components/            # Navbar、AuthProvider、Loading/Empty/Error 状态组件
+│   ├── lib/api.ts             # 唯一 fetch 出口 + Envelope 解包 + 错误分类
+│   ├── lib/session.ts         # 访问令牌存取
 │   └── Dockerfile
 ├── backend/                   # FastAPI
 │   ├── app/
-│   │   ├── api/v1/            # 路由
+│   │   ├── api/v1/            # 路由: health / auth / projects
 │   │   ├── core/              # config/database/logging/security/responses/exceptions
 │   │   ├── models/            # ORM
 │   │   ├── schemas/           # Pydantic
-│   │   ├── services/          # 业务逻辑（Phase 2+）
-│   │   ├── repositories/      # 数据访问（Phase 2+）
+│   │   ├── services/          # 业务逻辑: auth_service / project_service
+│   │   ├── repositories/      # 数据访问: base / user / project
 │   │   ├── providers/         # LLM/Image/Video/TTS 抽象
 │   │   ├── agents/            # LangGraph（Phase 3+）
 │   │   ├── tasks/ workers/    # Celery（Phase 5+）
@@ -134,8 +135,21 @@ unset PYTHONPATH                      # Windows/git-bash 必要
 cd ../frontend && npm run typecheck && npm run build
 ```
 
-当前结果：**37 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
-ORM 持久化与约束、密码/JWT、日志脱敏、配置解析）。
+当前结果：**113 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
+ORM 持久化与约束、密码/JWT、日志脱敏、配置解析、认证 API、项目 CRUD、故事读写、
+**跨用户越权隔离**）。
+
+### 端到端验收
+
+```bash
+docker compose up -d --build
+bash scripts/verify_phase1.sh      # 18 项：健康检查 / Envelope / request_id / 404
+python scripts/verify_phase2.py    # 84 项：认证 / 项目CRUD / 故事 / 越权隔离
+```
+
+> Phase 2 的验收脚本用 Python 而非 curl+bash：在 Windows/git-bash 下用
+> `curl -d` 内联中文会被 shell 重新编码，后端直接以 400 拒绝 body，
+> 造成大量假失败。见 docs/TDD.md §16。
 
 ---
 
@@ -160,13 +174,46 @@ ORM 持久化与约束、密码/JWT、日志脱敏、配置解析）。
 | GET | `/` | 服务元信息 |
 | GET | `/docs` | Swagger UI |
 
+### 认证（Phase 2）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/auth/register` | 注册，直接返回访问令牌（201） |
+| POST | `/api/v1/auth/login` | 登录，返回访问令牌 |
+| GET | `/api/v1/auth/me` | 当前登录用户 |
+
+所有受保护接口使用 `Authorization: Bearer <access_token>`。
+
+### 项目 + 故事（Phase 2）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/projects` | 创建项目（可内联故事文本） |
+| GET | `/api/v1/projects` | 列表，支持 `page` / `page_size` / `search` / `status` |
+| GET | `/api/v1/projects/{id}` | 详情（含剧集摘要） |
+| PATCH | `/api/v1/projects/{id}` | 局部更新（只改传入字段） |
+| DELETE | `/api/v1/projects/{id}` | 删除（级联删除剧集） |
+| POST | `/api/v1/projects/{id}/story` | 保存 / 替换故事文本 |
+| GET | `/api/v1/projects/{id}/story` | 读取已保存的故事 |
+| DELETE | `/api/v1/projects/{id}/story` | 清空故事 |
+
+> PRD §22 以 `/api/projects` 描述逻辑路径，本项目统一挂在 `/api/v1` 前缀下。
+> 分页信息在 Envelope 的 `meta` 字段：`{total, page, page_size, pages}`。
+
 ```bash
-curl -s http://localhost:8000/health
-curl -s http://localhost:8000/api/v1/health/detail | python -m json.tool
+# 注册并拿到令牌
+curl -s -X POST http://localhost:8000/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"storytime2026"}' | python -m json.tool
+
+# 带令牌创建项目
+curl -s -X POST http://localhost:8000/api/v1/projects \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"kaitou","genre":"urban"}' | python -m json.tool
 ```
 
-Phase 2 起按 PRD §22 逐步补齐 projects / characters / episodes / script / storyboard /
-shots / compose / tasks 等接口。
+Phase 3 起按 PRD §22 补齐 `/analyze`、`/bible`、characters、locations、episodes、
+script、storyboard、shots、compose、tasks 等接口。
 
 ---
 
@@ -188,12 +235,14 @@ shots / compose / tasks 等接口。
 
 ---
 
-## Phase 1 已完成能力
+## 已完成能力
+
+### Phase 1 — 工程基础
 
 - [x] `frontend/` + `backend/` 双工程骨架（Next.js + TS + Tailwind / FastAPI）
 - [x] PostgreSQL + Redis 的 Docker Compose 编排与健康检查
 - [x] `.env.example` 全量配置 + 已生成真实 `.env`（含随机 `SECRET_KEY`）
-- [x] SQLAlchemy 2.0（UUID 主键、时间戳 Mixin、命名约定）+ Alembic 迁移 `0001_initial`
+- [x] SQLAlchemy 2.0（UUID 主键、时间戳 Mixin、命名约定）+ Alembic 迁移
 - [x] `users` / `projects` / `episodes` 三张表 + 索引 + 级联删除
 - [x] `GET /health` 裸契约 + `GET /api/v1/health/detail` 依赖检查
 - [x] 统一 API Response Envelope + 完整错误码表
@@ -201,25 +250,41 @@ shots / compose / tasks 等接口。
 - [x] `request_id` 生成、透传、响应头回写、日志关联
 - [x] 结构化 JSON 日志 + 敏感信息脱敏过滤器
 - [x] Provider 抽象层接口（LLM / Image / Video / TTS），**未接真实厂商**
-- [x] pytest 测试套件 37 项全绿；Alembic 迁移与模型零漂移
 - [x] 前端 API 客户端（Envelope 解包 + 错误分类）+ 加载/空/错误三态组件
-- [x] 首页实时展示后端连通性（Phase 1 验收面）
-- [x] README / TDD / PRD 文档
 
-**未做（刻意）**：AI Story Parser、图片/视频/TTS、异步任务、任何真实模型调用。
+### Phase 2 — 项目系统
+
+- [x] 注册 / 登录 / 当前用户（JWT，bcrypt 预哈希口令）
+- [x] `get_current_user` 统一鉴权依赖，受保护路由一律 401 而非裸 403
+- [x] Repository / Service 分层落地（`base` / `user` / `project`）
+- [x] Project CRUD：创建 / 列表（分页·搜索·筛选）/ 详情 / 局部更新 / 删除
+- [x] 故事文本录入与保存（`story_source` + `story_text`，迁移 `0002`）
+- [x] **跨用户越权隔离**：他人项目一律 404（非 403），不泄露资源是否存在
+- [x] 口令强度校验、邮箱大小写归一化、错误信息不泄露账号是否注册
+- [x] 前端：首页项目列表（卡片 / 搜索 / 状态筛选 / 分页 / 空态）
+- [x] 前端：登录注册页（同一表单切换、按 `next` 参数回跳）
+- [x] 前端：创建项目页（题材·画风·故事来源·故事文本，即时校验）
+- [x] 前端：项目详情页（左侧导航，概览 / 故事设定 / 设置 可用，其余标注 Phase）
+- [x] 删除二次确认；401 自动清理本地会话并回登录页
+- [x] 迁移 `0002_project_story`；SQLite 与 Postgres 双验证零漂移
+- [x] pytest **113 项**全绿；ruff 全通过
+- [x] 端到端验收脚本：`verify_phase1.sh`（18 项）+ `verify_phase2.py`（84 项）
+
+**未做（刻意）**：AI Story Parser、`/analyze` 与 `/bible` 接口、图片/视频/TTS、
+异步任务、任何真实模型调用。
 
 ---
 
-## 下一步：Phase 2（项目系统）
+## 下一步：Phase 3（Story Agent）
 
-1. 用户注册 / 登录（JWT，`get_current_user` 依赖）
-2. Project CRUD + **所有查询强制 `user_id` 过滤**（越权返回 403）
-3. Story 文本输入与保存
-4. 前端：登录页、项目列表页、创建项目页、项目详情页
-5. Repository / Service 分层落地，Pydantic 输入输出 Schema
-6. 单元测试 + API 测试；前端 loading / empty / error 三态接入真实接口
+1. LangGraph 工作流：`story_parser → character_extractor → location_extractor`
+2. 新增 `characters` / `locations` 表与迁移
+3. `LLMProvider` 抽象 + **Mock Provider**（真实 Provider 通过环境变量切换）
+4. AI 输出必须经 Pydantic Schema 校验，失败自动重试
+5. `POST /projects/{id}/analyze`、`GET /projects/{id}/bible` 接口
+6. 前端展示 Story Bible / 人物 / 场景，并允许人工修改
 
-> 注意：Phase 2 **不要**实现 AI Story Parser —— 先把纯 CRUD 跑通并测试。
+> 注意：Phase 3 **不要**碰图片、视频、TTS。
 
 ---
 

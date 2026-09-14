@@ -276,10 +276,133 @@ docker compose
 | Phase | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | 工程基础（前端/后端骨架、PG、Redis、Compose、迁移、/health、统一响应、request_id、异常处理、测试） | ✅ 已完成 |
-| 2 | 项目系统（认证、Project CRUD、Story 输入、列表/详情/创建页） | ⏳ 待开发 |
+| 2 | 项目系统（认证、Project CRUD、Story 输入、列表/详情/创建页） | ✅ 已完成 |
 | 3 | Story Agent（LangGraph、Story Bible、Character/Location、Mock LLM Provider） | ⏳ 待开发 |
 | 4 | Episode Agent（Planner / Script / Storyboard / Consistency） | ⏳ 待开发 |
 | 5 | 图片（ImageProvider、参考图、Prompt Builder、异步任务） | ⏳ 待开发 |
 | 6 | 视频（VideoProvider、轮询、重试、Asset 存储） | ⏳ 待开发 |
 | 7 | TTS（音色绑定、台词音频） | ⏳ 待开发 |
 | 8 | 合成（字幕、BGM、FFmpeg、成片） | ⏳ 待开发 |
+
+---
+
+## 15. Phase 2 设计（项目系统）
+
+### 15.1 分层落地
+
+```
+请求 → api/v1/*.py       只做参数校验 + 序列化，不含业务规则
+        ↓
+      services/*.py      鉴权后的业务规则；唯一提交事务的地方
+        ↓
+      repositories/*.py  唯一触碰 ORM Session 的地方
+        ↓
+      models/*.py
+```
+
+- `repositories/base.py` 提供最小 CRUD 原语（`get` / `add` / `delete` / `save`），
+  子类只加自己需要的查询；**读取方法不隐式提交事务**。
+- `services/` 是唯一调用 `db.commit()` 的层，便于把同一套逻辑复用到 Celery worker。
+- `api/deps.py` 用 `Annotated` 别名（`CurrentUser` / `ProjectServiceDep`）让路由签名保持简洁。
+
+### 15.2 认证
+
+| 项 | 实现 |
+| --- | --- |
+| 令牌 | JWT（HS256），`sub` = user id，附带 `email` claim |
+| 传输 | `Authorization: Bearer <token>`（`HTTPBearer(auto_error=False)`） |
+| 口令 | bcrypt，先 SHA-256+base64 预哈希以规避 72 字节静默截断 |
+| 校验 | `get_current_user`：解析 → 查库 → 用户必须仍存在 |
+| 注册 | 邮箱归一化为小写后存储，唯一约束兜底 |
+| 强度 | ≥8 位且不能纯字母或纯数字 |
+| 防枚举 | 登录失败时「邮箱不存在」与「密码错误」返回完全相同的错误体 |
+
+`HTTPBearer(auto_error=False)` 是有意为之：默认的 `auto_error=True` 会抛 Starlette 裸
+403，绕过统一 Envelope；关掉后由我们抛 `UnauthorizedError`，保证仍是 401 + 统一错误码。
+
+**令牌不携带权限信息**，每次请求都重新查库。这样封禁/删除用户立即生效，代价是每请求一次主键查询 ——
+在当前量级下完全可接受，也让「签名有效 ≠ 用户有效」这条边界清晰可见（见
+`test_token_for_deleted_user_is_rejected`）。
+
+### 15.3 越权隔离（本项目最关键的安全约束）
+
+```python
+# repositories/project.py
+def get_for_user(self, project_id, user_id) -> Project | None:
+    stmt = select(Project).where(
+        Project.id == project_id,
+        Project.user_id == user_id,
+    )
+    return self.db.execute(stmt).scalar_one_or_none()
+```
+
+三条规则：
+
+1. **不存在无作用域的 getter**。仓库层不暴露「按 id 查项目」，从 API 表层就无从
+   忘记加 `user_id`。
+2. **他人项目返回 404 而非 403**。403 等于确认「这个 id 存在但不是你的」，
+   可被用来枚举他人的项目 id；404 让两种失败不可区分。
+3. **写路径同样受限**：PATCH / DELETE / story 读写全部先走 `get_for_user`。
+
+对应测试：`test_projects_api.py::test_other_user_cannot_*` 与
+`verify_phase2.py` 的 isolation 段（含「B 的响应体不含 A 的项目名」这类泄露检查）。
+
+### 15.4 数据模型变更（迁移 `0002_project_story`）
+
+`projects` 增加两列：
+
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `story_source` | `String(32)` 可空 | `SYNOPSIS` / `NOVEL` / `SCRIPT`（PRD §5.2 故事来源） |
+| `story_text` | `Text` 可空 | 原始故事文本，Phase 3 的解析输入 |
+
+选择直接加列而非建 `stories` 表：V1 一项目一故事，多版本历史属于 PRD §2.2 的 P1。
+`has_story` 不落库，由 `story_text` 是否非空派生，避免两个字段不同步。
+
+### 15.5 前端
+
+| 文件 | 职责 |
+| --- | --- |
+| `lib/session.ts` | 令牌与用户信息的 localStorage 读写；401 广播事件 |
+| `lib/api.ts` | 唯一 fetch 出口，两个内部原语：`request`（返回 `data`）与 `requestEnvelope`（需要 `meta` 时用） |
+| `components/auth-provider.tsx` | 登录态 Context；挂载时校验存量令牌；监听 401 事件 |
+| `components/states.tsx` | `LoadingState` / `EmptyState` / `ErrorState` / `FormError` / `SignInRequired` |
+| `app/page.tsx` | 首页项目列表（PRD §5.1）：卡片、搜索（300ms 防抖）、状态筛选、分页 |
+| `app/login/page.tsx` | 登录/注册同表单切换，按 `next` 回跳 |
+| `app/projects/new/page.tsx` | 创建项目（PRD §5.2 全部字段） |
+| `app/projects/[id]/page.tsx` | 详情 + 左侧导航（PRD §5.3） |
+
+前端设计要点：
+
+- **令牌先校验再用**：`AuthProvider` 挂载时调 `GET /auth/me`。存量过期令牌若直接使用，
+  会让后续每个请求都 401。网络错误时保留缓存的用户信息（后端可能只是挂了）。
+- **401 全局处理**：`lib/api.ts` 在收到 401 时清理本地会话并派发
+  `ai-studio:unauthorized`，`AuthProvider` 据此登出，避免「看起来已登录但请求全失败」。
+- **错误可见**：`ApiError` 携带 `code` / `request_id` / 字段级 `details`，
+  `FormError` 把 422 的字段校验信息逐条展示，而不是笼统提示「请求失败」。
+- 详情页对未实现模块显式渲染「计划在 Phase N 交付」，不画不可用的假交互。
+- 原有的 `hooks/use-async.ts` 在 Phase 2 已删除：各页面需要分页/重取等细粒度控制，
+  统一的 hook 反而更绕，避免留下无引用的死代码。
+
+### 15.6 已知限制
+
+- **令牌存于 `localStorage`**：任何同源脚本都能读取，XSS 即等价于令牌泄露。
+  httpOnly Cookie + CSRF 防护是正确解法，列为后续工作项。
+- 未实现刷新令牌，令牌过期即需重新登录（`ACCESS_TOKEN_EXPIRE_MINUTES` 默认 1 天）。
+- 未做登录失败频率限制（Phase 2 范围内不含防爆破）。
+
+---
+
+## 16. Windows/git-bash 验收脚本的编码坑
+
+用 `curl -d '{"name":"中文"}'` 在 Windows/git-bash 下会把中文按本地代码页重新编码，
+后端拿到非法 UTF-8 后返回 **400 `There was an error parsing the body`** ——
+看起来像应用 bug，实际是测试载体的坑。表现为：纯 ASCII 载荷全部通过、含中文的载荷全部 400。
+
+因此：
+
+- `scripts/verify_phase1.sh` 载荷全为 ASCII，可以继续用 curl+bash；
+- `scripts/verify_phase2.sh` 改成 `scripts/verify_phase2.py`（stdlib `urllib`），
+  由 Python 显式编码 UTF-8，从根上消除这类假失败。
+
+排查提示：遇到「同一接口 ASCII 通过、中文 400」时先怀疑 shell 编码，不要改后端。

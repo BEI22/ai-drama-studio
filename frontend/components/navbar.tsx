@@ -1,6 +1,20 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+import { useAuth } from "@/components/auth-provider";
+
+const NAV_ITEMS = [
+  { href: "/", label: "项目" },
+  { href: "/#", label: "素材", disabled: true },
+  { href: "/#", label: "任务", disabled: true },
+];
 
 export function Navbar() {
+  const { user, initializing, logout } = useAuth();
+  const pathname = usePathname();
+
   return (
     <header className="flex items-center justify-between border-b border-ink-800 py-5">
       <Link href="/" className="flex items-center gap-3">
@@ -16,23 +30,57 @@ export function Navbar() {
           </svg>
         </span>
         <span className="leading-tight">
-          <span className="block text-sm font-semibold tracking-wide text-white">
-            AI STUDIO
-          </span>
+          <span className="block text-sm font-semibold tracking-wide text-white">AI STUDIO</span>
           <span className="block text-[11px] text-slate-500">AI 漫剧自动创作平台</span>
         </span>
       </Link>
 
       <nav className="flex items-center gap-1 text-sm">
-        <span className="rounded-lg px-3 py-1.5 text-slate-400">项目</span>
-        <span className="rounded-lg px-3 py-1.5 text-slate-400">素材</span>
-        <span className="rounded-lg px-3 py-1.5 text-slate-400">任务</span>
-        <span
-          className="badge ml-2 border-ink-600 bg-ink-850 text-slate-500"
-          title="Phase 2 实现"
-        >
-          未登录
-        </span>
+        {NAV_ITEMS.map((item) => {
+          const active = item.href === pathname;
+          if (item.disabled) {
+            return (
+              <span
+                key={item.label}
+                className="cursor-not-allowed rounded-lg px-3 py-1.5 text-slate-600"
+                title="后续阶段实现"
+              >
+                {item.label}
+              </span>
+            );
+          }
+          return (
+            <Link
+              key={item.label}
+              href={item.href}
+              className={`rounded-lg px-3 py-1.5 transition-colors ${
+                active ? "bg-ink-800 text-white" : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
+
+        {initializing ? (
+          <span className="skeleton ml-2 h-7 w-20" />
+        ) : user ? (
+          <div className="ml-2 flex items-center gap-2">
+            <span
+              className="badge max-w-[14rem] truncate border-ink-600 bg-ink-850 text-slate-300"
+              title={user.email}
+            >
+              {user.email}
+            </span>
+            <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={logout}>
+              退出
+            </button>
+          </div>
+        ) : (
+          <Link href="/login" className="btn-primary ml-2 px-3 py-1.5 text-xs">
+            登录 / 注册
+          </Link>
+        )}
       </nav>
     </header>
   );
