@@ -206,16 +206,21 @@ for field in (
 # that a caller can always tell which one produced the Bible.
 meta = bible.get("meta") or {}
 check("provenance records the provider", ACTIVE_PROVIDER, meta.get("provider"))
-check("mock flag agrees with the provider",
-      ACTIVE_PROVIDER == "mock", bool(meta.get("mock")))
+check("mock flag agrees with the provider", ACTIVE_PROVIDER == "mock", bool(meta.get("mock")))
 check("provenance records the model", True, bool(meta.get("model")))
 check("provenance records prompt versions", True, bool(meta.get("prompt_versions")))
 check("prompt version is versioned", "story_parser_v2", meta["prompt_versions"]["story_parser"])
 check("usage recorded for all 3 nodes", 3, len(meta.get("usage") or []))
-check("every usage row names its node", True,
-      all(r.get("node") and r.get("provider") for r in meta.get("usage") or []))
-check("usage reports token counts", True,
-      all("input_tokens" in r and "output_tokens" in r for r in (meta.get("usage") or [])))
+check(
+    "every usage row names its node",
+    True,
+    all(r.get("node") and r.get("provider") for r in meta.get("usage") or []),
+)
+check(
+    "usage reports token counts",
+    True,
+    all("input_tokens" in r and "output_tokens" in r for r in (meta.get("usage") or [])),
+)
 
 # ----------------------------------------------------------------- characters
 print("== characters (Character Bible) ==")
@@ -250,9 +255,14 @@ for field in (
 
 check("appearance is image-prompt ready", True, len(hero["appearance"]) > 5)
 check("personality is a list", True, isinstance(hero["personality"], list))
-check("roles are from the closed vocabulary", True,
-      all(c["role"] in {"PROTAGONIST", "ANTAGONIST", "SUPPORTING", "MENTOR", "LOVE_INTEREST", "OTHER"}
-          for c in characters))
+check(
+    "roles are from the closed vocabulary",
+    True,
+    all(
+        c["role"] in {"PROTAGONIST", "ANTAGONIST", "SUPPORTING", "MENTOR", "LOVE_INTEREST", "OTHER"}
+        for c in characters
+    ),
+)
 
 # ------------------------------------------------------------------ locations
 print("== locations (Scene Bible) ==")
@@ -265,7 +275,15 @@ check("classroom found", True, any("教室" in n for n in location_names))
 check("no single-char fragments", True, all(len(n) >= 2 for n in location_names))
 
 scene = locations[0]
-for field in ("id", "name", "description", "time", "lighting", "visual_style", "reference_image_url"):
+for field in (
+    "id",
+    "name",
+    "description",
+    "time",
+    "lighting",
+    "visual_style",
+    "reference_image_url",
+):
     check(f"location exposes {field} (PRD 8)", True, field in scene)
 
 # ------------------------------------------------------------ project surface
@@ -303,27 +321,34 @@ check("replace never duplicates a name", len(second_names), len(set(second_names
 
 if ACTIVE_PROVIDER == "mock":
     # The mock is deterministic, so the stronger guarantees are testable here.
-    check("character count unchanged (deterministic provider)",
-          len(names), len(second_names))
-    check("character ids are stable (deterministic provider)",
-          [c["id"] for c in characters], [c["id"] for c in second])
-    check("rows were upserted, not recreated",
-          sorted(c["created_at"] for c in characters),
-          sorted(c["created_at"] for c in second))
+    check("character count unchanged (deterministic provider)", len(names), len(second_names))
+    check(
+        "character ids are stable (deterministic provider)",
+        [c["id"] for c in characters],
+        [c["id"] for c in second],
+    )
+    check(
+        "rows were upserted, not recreated",
+        sorted(c["created_at"] for c in characters),
+        sorted(c["created_at"] for c in second),
+    )
 else:
     # Even with a real model, a name that both runs produced must keep its id,
     # because re-analysis upserts by name rather than wiping the table.
     before = {c["name"]: c["id"] for c in characters}
     shared = [n for n in second_names if n in before]
-    check("surviving names keep their id (upsert, not recreate)",
-          [before[n] for n in shared],
-          [c["id"] for c in second if c["name"] in before])
+    check(
+        "surviving names keep their id (upsert, not recreate)",
+        [before[n] for n in shared],
+        [c["id"] for c in second if c["name"] in before],
+    )
     print(f"        ({len(shared)}/{len(second_names)} names survived re-analysis)")
 
 status, payload = call("GET", f"/projects/{project_id}/characters", token=a_token)
 listed_now = data_of(payload)
-check("stored cast matches the response", True,
-      set(c["name"] for c in listed_now) == set(second_names))
+check(
+    "stored cast matches the response", True, {c["name"] for c in listed_now} == set(second_names)
+)
 
 # -------------------------------------------------------------------- crud
 print("== character / location CRUD ==")
@@ -362,11 +387,10 @@ check("unknown field -> 422", 422, status)
 status, _ = call("PATCH", f"/characters/{manual_id}", body={}, token=a_token)
 check("empty patch -> 422", 422, status)
 
-status, payload = call(
-    "GET", f"/projects/{project_id}/characters", token=a_token
+status, payload = call("GET", f"/projects/{project_id}/characters", token=a_token)
+check(
+    "character list includes the manual one", True, manual_id in [c["id"] for c in data_of(payload)]
 )
-check("character list includes the manual one", True,
-      manual_id in [c["id"] for c in data_of(payload)])
 
 status, payload = call("DELETE", f"/characters/{manual_id}", token=a_token)
 check("delete character -> 200", 200, status)
@@ -396,19 +420,25 @@ check("delete location -> 200", 200, status)
 # --------------------------------------------------------------- validation
 print("== validation ==")
 
-status, payload = call("POST", "/projects", body={
-    "name": "无故事项目", "story_source": None, "story_text": None}, token=a_token)
+status, payload = call(
+    "POST",
+    "/projects",
+    body={"name": "无故事项目", "story_source": None, "story_text": None},
+    token=a_token,
+)
 short_id = data_of(payload)["id"]
 status, payload = call("POST", f"/projects/{short_id}/analyze", token=a_token)
 check("analyze without story -> 422", 422, status)
 check("validation error code", "VALIDATION_ERROR", error_code(payload))
 
-status, payload = call("POST", f"/projects/{short_id}/analyze",
-                       body={"story_text": "太短"}, token=a_token)
+status, payload = call(
+    "POST", f"/projects/{short_id}/analyze", body={"story_text": "太短"}, token=a_token
+)
 check("analyze a too-short story -> 422", 422, status)
 
-status, payload = call("POST", f"/projects/{short_id}/analyze",
-                       body={"story_text": STORY}, token=a_token)
+status, payload = call(
+    "POST", f"/projects/{short_id}/analyze", body={"story_text": STORY}, token=a_token
+)
 check("analyze preview text -> 200", 200, status)
 check("preview produced characters", True, len(data_of(payload)["characters"]) >= 3)
 status, payload = call("GET", f"/projects/{short_id}", token=a_token)
@@ -420,8 +450,11 @@ status, payload = call(
     body={"story_source": "NOVEL", "story_text": "这是一段全新的故事，主角换了人，场景也全变了。"},
     token=a_token,
 )
-check("saving a new story invalidates the analysis", "NOT_ANALYZED",
-      data_of(payload)["analysis_status"])
+check(
+    "saving a new story invalidates the analysis",
+    "NOT_ANALYZED",
+    data_of(payload)["analysis_status"],
+)
 
 status, payload = call("POST", f"/projects/{project_id}/analyze", token=a_token)
 check_status("can re-analyze after a story change (no 409)", 200, status, payload)
@@ -446,12 +479,14 @@ status, _ = call("GET", f"/projects/{project_id}/analyze/status", token=b_token)
 check("B cannot read A's analyze status -> 404", 404, status)
 
 # B owns nothing, so any real id from A must be invisible through the id route.
-status, payload = call("POST", f"/projects/{project_id}/characters",
-                       body={"name": "A 的临时角色"}, token=a_token)
+status, payload = call(
+    "POST", f"/projects/{project_id}/characters", body={"name": "A 的临时角色"}, token=a_token
+)
 victim_id = data_of(payload)["id"]
 
-status, payload = call("PATCH", f"/characters/{victim_id}",
-                       body={"name": "被 B 改坏了"}, token=b_token)
+status, payload = call(
+    "PATCH", f"/characters/{victim_id}", body={"name": "被 B 改坏了"}, token=b_token
+)
 check("B cannot patch A's character -> 404", 404, status)
 check("B's patch leaks nothing", False, "被 B 改坏了" in json.dumps(payload, ensure_ascii=False))
 
@@ -460,10 +495,13 @@ check("B cannot delete A's character -> 404", 404, status)
 
 status, payload = call("GET", f"/projects/{project_id}/characters", token=a_token)
 check("A's character survived", True, victim_id in [c["id"] for c in data_of(payload)])
-check("A's character was not renamed", False, "被 B 改坏了" in [c["name"] for c in data_of(payload)])
+check(
+    "A's character was not renamed", False, "被 B 改坏了" in [c["name"] for c in data_of(payload)]
+)
 
-status, _ = call("POST", f"/projects/{project_id}/characters",
-                 body={"name": "B 的越权角色"}, token=b_token)
+status, _ = call(
+    "POST", f"/projects/{project_id}/characters", body={"name": "B 的越权角色"}, token=b_token
+)
 check("B cannot add to A's project -> 404", 404, status)
 
 status, _ = call("GET", "/projects", token=b_token)

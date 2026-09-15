@@ -327,6 +327,20 @@ docker compose
     修法：**先把 dict 组装完整（含 `_meta`）再赋值**，且赋值放在最后；
     并用 `dict(...)` 复制，避免污染工作流返回的 state。
     教训：凡是「写库后还要再读」的字段，回归测试必须换 Session 读。
+15. **ruff 配置放错位置 → `scripts/` 从未被 lint 过**（Phase 3 收尾时发现）。
+    ruff 按「离目标文件最近」的配置逐级向上查找。原先 `[tool.ruff]` 写在
+    `backend/pyproject.toml`，而 `scripts/` 在它管辖范围之外：
+    - 从 **仓库根** 跑 `ruff check scripts/` → 找不到配置 → 退回内置默认
+      （line-length 88），于是报告「需要重新格式化」；
+    - 从 **backend/** 跑 `ruff check ../scripts/` → 命中 backend 配置
+      （line-length 100）→ 报告「全部通过」。
+    同一个文件「干净」还是「脏」取决于你站在哪个目录，**而 scripts/ 实际上
+    从来没被真正的项目规则检查过**（隐藏的 `C401` 就是这么漏掉的）。
+    修法：配置上移到仓库根 `ruff.toml`，成为唯一事实来源；
+    并显式声明 `src = ["backend"]`，否则 isort 认不出 `app.*` 是 first-party，
+    backend 里每个 import 块都会被误报为未排序。
+    教训：lint 配置应当放在**被检查范围的最上层目录**，并且「lint 干净」这句话
+    必须带上「对哪些路径、从哪个 cwd」才成立。
 
 ---
 

@@ -1,0 +1,23 @@
+{
+  "name": "ai-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Studio — AI 漫剧自动创作平台。任务入口见 scripts/tasks.py，`npm run --list` 可查看全部。",
+  "comment": "This file exists as the canonical, detectable entry point for the repo. The real logic lives in scripts/tasks.py because npm picks a different shell per platform and the host PYTHONPATH must be stripped for every child process.",
+  "scripts": {
+    "test": "python scripts/tasks.py test",
+    "lint": "python scripts/tasks.py lint",
+    "fmt": "python scripts/tasks.py fmt",
+    "typecheck": "python scripts/tasks.py typecheck",
+    "build": "python scripts/tasks.py build",
+    "verify": "python scripts/tasks.py verify",
+    "verify:ui": "python scripts/tasks.py verify:ui",
+    "seed": "python scripts/tasks.py seed",
+    "up": "python scripts/tasks.py up",
+    "down": "python scripts/tasks.py down",
+    "list": "python scripts/tasks.py --list"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

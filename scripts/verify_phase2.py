@@ -111,7 +111,9 @@ status, _ = call(
 check("too-short password -> 422", 422, status)
 
 status, _ = call(
-    "POST", "/auth/register", body={"email": f"letters+{STAMP}@example.com", "password": "onlyletters"}
+    "POST",
+    "/auth/register",
+    body={"email": f"letters+{STAMP}@example.com", "password": "onlyletters"},
 )
 check("letters-only password -> 422", 422, status)
 
@@ -133,7 +135,11 @@ status, payload = call(
     "POST", "/auth/login", body={"email": "nobody@example.com", "password": "whatever123"}
 )
 check("unknown email -> 401", 401, status)
-check("unknown email is indistinguishable from wrong password", True, payload.get("error") == wrong_password_error)
+check(
+    "unknown email is indistinguishable from wrong password",
+    True,
+    payload.get("error") == wrong_password_error,
+)
 
 status, payload = call("GET", "/auth/me", token=a_token)
 check("me -> 200", 200, status)
@@ -205,7 +211,9 @@ status, payload = call("GET", "/projects", token=a_token)
 check("list -> 200", 200, status)
 check("list total=2", 2, payload.get("meta", {}).get("total"))
 check("list page meta", 1, payload.get("meta", {}).get("page"))
-check("list contains our project", True, any(i["id"] == project_id for i in data_of(payload)["items"]))
+check(
+    "list contains our project", True, any(i["id"] == project_id for i in data_of(payload)["items"])
+)
 
 status, payload = call("GET", "/projects?search=%E9%87%8D%E7%94%9F", token=a_token)
 check("search by chinese substring", 1, payload.get("meta", {}).get("total"))
@@ -220,7 +228,9 @@ check("pages computed", 2, payload.get("meta", {}).get("pages"))
 status, _ = call("GET", "/projects?page_size=500", token=a_token)
 check("page_size over max -> 422", 422, status)
 
-status, payload = call("PATCH", f"/projects/{project_id}", body={"name": "改名后的项目"}, token=a_token)
+status, payload = call(
+    "PATCH", f"/projects/{project_id}", body={"name": "改名后的项目"}, token=a_token
+)
 check("patch name -> 200", 200, status)
 check("patch applied", "改名后的项目", data_of(payload).get("name"))
 check("patch is partial (genre kept)", "都市", data_of(payload).get("genre"))

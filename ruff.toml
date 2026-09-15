@@ -1,0 +1,27 @@
+# Single ruff configuration for the whole repository.
+#
+# Why this lives at the root instead of in backend/pyproject.toml: ruff resolves
+# the *nearest* config walking up from each file. With the config nested in
+# backend/, repo-level tooling in scripts/ sat outside its reach -- so running
+# ruff from the repo root silently fell back to built-in defaults (line-length
+# 88, no rule selection) and scripts/ was never actually linted. Invoking ruff
+# from backend/ happened to pick up the right config, which made the gap easy to
+# miss: the same file could be reported as "clean" or "would reformat" depending
+# on the working directory.
+#
+# One config at the root removes that ambiguity and covers backend/, scripts/ and
+# migrations/ identically.
+
+line-length = 100
+target-version = "py311"
+
+# Ruff infers the isort "src" root from the config's location. While this config
+# lived in backend/pyproject.toml, `app.*` was correctly classified as
+# first-party; from the repo root it is not, and every import block in the
+# backend starts being reported as un-sorted. Declare it explicitly so the
+# classification does not depend on where the config sits.
+src = ["backend"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]

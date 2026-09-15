@@ -125,26 +125,32 @@ npm run dev            # http://localhost:3000
 
 ---
 
-## 测试
+## 测试与验收
+
+仓库根目录提供统一任务入口（`package.json` → `scripts/tasks.py`）。
+**统一从这里跑**，不要再手敲命令：脚本会为子进程清掉宿主被污染的 `PYTHONPATH`，
+并按平台选择正确的 shell。
 
 ```bash
-cd backend
-unset PYTHONPATH                      # Windows/git-bash 必要
-.venv/Scripts/python.exe -m pytest -q
-
-# 类型与静态检查
-.venv/Scripts/python.exe -m ruff check app tests
-cd ../frontend && npm run typecheck && npm run build
+npm run --list      # 查看全部任务
+npm run lint        # ruff check + format --check（backend + scripts 全覆盖）
+npm run test        # 后端 pytest（hermetic）
+npm run typecheck   # 前端 tsc --noEmit
+npm run build       # 前端生产构建 + 容器镜像
+npm run verify      # 三份端到端验收脚本
+npm run verify:ui   # 真实 Chrome 渲染 UI（Playwright）
+npm run seed        # 造演示账号 + 已解析项目
+npm run up / down   # 启停 compose 栈
 ```
 
-当前结果：**113 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
+当前结果：**316 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
 ORM 持久化与约束、密码/JWT、日志脱敏、配置解析、认证 API、项目 CRUD、故事读写、
-**跨用户越权隔离**）。
+跨用户越权隔离、Story Agent 与 Bible 别名归一化、溯源落库）。
 
 ### 端到端验收
 
 ```bash
-docker compose up -d --build
+npm run verify                     # 等价于下面三条
 bash scripts/verify_phase1.sh      # 18 项：健康检查 / Envelope / request_id / 404
 python scripts/verify_phase2.py    # 84 项：认证 / 项目CRUD / 故事 / 越权隔离
 python scripts/verify_phase3.py    # 132 项：Story Agent / Bible / 人物场景 CRUD / 隔离
@@ -156,6 +162,9 @@ python scripts/verify_phase3.py    # 132 项：Story Agent / Bible / 人物场�
 >
 > `verify_phase3.py` 不写死 provider：mock 与真实模型都能跑，
 > 只有 mock 才会额外校验「重复解析结果完全一致」这类确定性断言。
+>
+> `verify_phase1.sh` 是唯一的 bash 脚本；从 Python 调用它必须用 git-bash 的
+> 绝对路径（裸 `bash` 在 Windows 会命中 WSL 中继并失败），`npm run verify` 已处理。
 
 ---
 
