@@ -801,24 +801,36 @@ V1 只做**能从数据本身判定**的部分，其余明确不装作能判：
 该端点同时审剧本与分镜：只审分镜会让它对同一份数据给出与生成时**不一致**的结论
 （剧本级的 `SPEAKER_NOT_IN_SCENE` 等会凭空消失）。
 
-### 18.6 API（10 个端点）
+### 18.6 API（16 个端点）
+
+PRD §22 为 Phase 4 规定的端点是 **10 个**，全部实现，无遗漏：
+
+`GET/POST /projects/{id}/episodes`、`GET/PATCH /episodes/{id}`、
+`GET/POST/PATCH /episodes/{id}/script[/generate]`、
+`GET/POST/PATCH /episodes/{id}/storyboard[/generate]`。
+
+另有 **6 个 PRD 未列、为实现 Phase 4 语义所必需的补充端点**（下表标 ➕）。
+它们都是「PRD 规定了组件、但没规定触发入口」的补位，不是范围扩张：
+Episode Planner 需要一个触发入口；UI 需要独立的复检与镜头读写路径。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/projects/{id}/episodes` | 分集列表（含 shot_count 等派生字段） |
 | POST | `/projects/{id}/episodes` | 手动新增一集 |
-| POST | `/projects/{id}/episodes/plan` | 运行 episode_planner（`replace` 需显式传） |
-| DELETE | `/projects/{id}/episodes` | 清空分集计划 |
-| GET/PATCH/DELETE | `/episodes/{id}` | 剧集详情 / 修改 / 删除 |
+| ➕ POST | `/projects/{id}/episodes/plan` | 运行 episode_planner（`replace` 需显式传） |
+| ➕ DELETE | `/projects/{id}/episodes` | 清空分集计划 |
+| GET | `/episodes/{id}` | 剧集详情 |
+| PATCH | `/episodes/{id}` | 修改剧集 |
+| ➕ DELETE | `/episodes/{id}` | 删除剧集 |
 | GET | `/episodes/{id}/script` | 剧本（含 id→name 查表） |
 | POST | `/episodes/{id}/script/generate` | 生成剧本 |
 | PATCH | `/episodes/{id}/script` | 修改剧本（`scenes` 整体替换） |
 | GET | `/episodes/{id}/storyboard` | 分镜文档 + 扁平镜头表 + 一致性报告 |
 | POST | `/episodes/{id}/storyboard/generate` | 生成分镜并跑一致性检查 |
 | PATCH | `/episodes/{id}/storyboard` | 修改分镜文档 |
-| GET | `/episodes/{id}/shots` | 镜头列表 |
-| PATCH | `/shots/{id}` | 修改单个镜头（枚举**严格**校验） |
-| GET | `/episodes/{id}/consistency` | 复检（不调模型） |
+| ➕ GET | `/episodes/{id}/shots` | 镜头列表 |
+| ➕ PATCH | `/shots/{id}` | 修改单个镜头（枚举**严格**校验） |
+| ➕ GET | `/episodes/{id}/consistency` | 复检（不调模型） |
 
 写端点沿用本仓约定：顶层聚合（注册、建项目）返回 201，
 **嵌套集合**（`POST /projects/{id}/episodes`）返回 200 —— 与 Phase 2/3 的
@@ -826,7 +838,7 @@ V1 只做**能从数据本身判定**的部分，其余明确不装作能判：
 
 ### 18.7 测试策略
 
-`442 passed`（Phase 3 时为 316）。本轮新增的重点：
+`445 passed`（Phase 3 时为 316）。本轮新增的重点：
 
 - `test_episode_consistency.py::TestConsistencyShapeParity` —— 同一规则对
   **Pydantic 对象**与**dict** 两种输入断言，且结果必须完全一致。
