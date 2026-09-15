@@ -31,6 +31,29 @@ _STORY_RE = re.compile(r"<story>(.*?)</story>", re.DOTALL)
 _GENRE_RE = re.compile(r"题材：\s*(\S+)")
 _STYLE_RE = re.compile(r"画风：\s*(\S+)")
 
+# Phase 4 prompts embed machine-readable JSON blocks so a deterministic provider
+# can answer them without an LLM: the roster carries the real database ids that
+# the script must echo back, and <script> carries the scenes the storyboard must
+# cover. Parsing them is what lets the mock satisfy PRD section 10's id-binding
+# rule instead of inventing identifiers.
+_EPISODE_COUNT_RE = re.compile(r"拆解为\s*(\d+)\s*集")
+
+
+def _block(prompt: str, tag: str) -> str | None:
+    match = re.search(rf"<{tag}>(.*?)</{tag}>", prompt, re.DOTALL)
+    return match.group(1).strip() if match else None
+
+
+def _json_block(prompt: str, tag: str) -> Any | None:
+    raw = _block(prompt, tag)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
 # Deterministic palettes: the same name always yields the same look, which keeps
 # re-runs stable and makes the later consistency work testable.
 _HAIR_PALETTE = (
@@ -64,6 +87,53 @@ _AGE_BY_ROLE = {
     "SUPPORTING": "20-30 岁",
     "OTHER": "不详",
 }
+
+# Phase 4 fixtures. Deterministic so a re-run produces byte-identical episodes,
+# which is what makes the acceptance script's re-run checks meaningful.
+_EMOTION_PALETTE = (
+    "压抑的平静",
+    "迟疑",
+    "故作轻松",
+    "克制的愤怒",
+    "疲惫",
+    "下定决心",
+)
+
+_MOVEMENT_TEXT = {
+    "static": "固定",
+    "slow_push": "缓慢推近",
+    "push_in": "推近",
+    "pull_out": "拉远",
+    "pan_left": "向左摇",
+    "pan_right": "向右摇",
+    "tilt_up": "向上摇",
+    "tilt_down": "向下摇",
+    "tracking": "跟随移动",
+    "crane": "升降移动",
+    "handheld": "手持轻微晃动",
+}
+
+_ACTION_BY_SIZE = {
+    "extreme_wide": "在广阔空间中孤身伫立",
+    "wide": "身处环境之中，交代空间关系",
+    "medium": "与对手形成对峙站位",
+    "medium_close_up": "上半身入画，做出关键动作",
+    "close_up": "面部特写，情绪在眼神中变化",
+    "extreme_close_up": "极近距离捕捉细节微动",
+}
+
+
+def _dialogue_for(beat: str, name: str | None) -> str:
+    """A short, plausible line derived from the beat -- never a real quote."""
+    speaker = name or "我"
+    cleaned = beat.strip().rstrip("。！？!?")
+    if not cleaned:
+        return f"{speaker}：这次我不会再退。"
+    return f"{cleaned[:40]}。" if len(cleaned) <= 40 else f"{cleaned[:40]}……"
+
+
+def _action_for(shot_size: str) -> str:
+    return _ACTION_BY_SIZE.get(shot_size, "自然地完成动作")
 
 
 def _stable_index(seed: str, modulo: int) -> int:
@@ -140,6 +210,12 @@ class MockLLMProvider(LLMProvider):
             payload = self._build_characters(story)
         elif schema_title == "LocationExtraction":
             payload = self._build_locations(request.prompt, story)
+        elif schema_title == "EpisodePlanList":
+            payload = self._build_episode_plan(request.prompt, story)
+        elif schema_title == "ScriptContent":
+            payload = self._build_script(request.prompt)
+        elif schema_title == "StoryboardContent":
+            payload = self._build_storyboard(request.prompt)
         else:
             raise ProviderError(f"MockLLMProvider 不支持 schema: {schema_title!r}")
 
@@ -323,6 +399,205 @@ class MockLLMProvider(LLMProvider):
             )
 
         return {"locations": locations, "_mock": True}
+
+    # ------------------------------------------------------- Phase 4 builders
+    def _build_episode_plan(self, prompt: str, story: str) -> dict[str, Any]:
+        """Split the story into N episodes, titled from real sentences."""
+        match = _EPISODE_COUNT_RE.search(prompt)
+        desired = int(match.group(1)) if match else 6
+        desired = max(1, min(desired, len(h.split_sentences(story)) or 1, 12))
+
+        sentences = h.split_sentences(story)
+        if not sentences:
+            sentences = ["故事开始"]
+
+        episodes: list[dict[str, Any]] = []
+        for index in range(desired):
+            # Spread the summary across the story so later episodes are not all
+            # copies of the opening line.
+            position = int(index * len(sentences) / desired)
+            closing = int((index + 1) * len(sentences) / desired)
+            chunk = sentences[position : max(closing, position + 1)]
+
+            episodes.append(
+                {
+                    "episode_number": index + 1,
+                    "title": h.episode_title(chunk, index),
+                    "summary": " ".join(chunk)[:300] or sentences[position][:200],
+                    "duration": 180,
+                }
+            )
+
+        return {"episodes": episodes, "_mock": True}
+
+    def _build_script(self, prompt: str) -> dict[str, Any]:
+        """Write a script that binds to the *real* roster ids from the prompt.
+
+        This is the point of parsing ``<roster>``: PRD section 10 forbids invented
+        identifiers, and a mock that made up ids would make the node's binding
+        check untestable offline.
+        """
+        roster = _json_block(prompt, "roster") or {}
+        characters = [c for c in (roster.get("characters") or []) if c.get("id")]
+        locations = [loc for loc in (roster.get("locations") or []) if loc.get("id")]
+        episode = _json_block(prompt, "episode") or {}
+
+        if not characters or not locations:
+            # The node raises before reaching here; raise a ProviderError so the
+            # failure is attributed to provider input rather than a KeyError.
+            raise ProviderError("MockLLMProvider: script 生成需要 roster 中的 characters/locations")
+
+        summary = str(episode.get("summary") or "")
+        beats = h.split_sentences(summary) or [summary or "本集开始"]
+        scene_total = max(3, min(len(beats), 14))
+
+        scenes: list[dict[str, Any]] = []
+        for index in range(scene_total):
+            location = locations[index % len(locations)]
+            # A rotating pair of speakers keeps every scene's cast plausible
+            # without needing to parse who is actually in the summary.
+            speaker = characters[index % len(characters)]
+            partner = characters[(index + 1) % len(characters)]
+            present = [speaker["id"]]
+            if partner["id"] != speaker["id"]:
+                present.append(partner["id"])
+
+            beat = beats[index] if index < len(beats) else beats[-1]
+            scenes.append(
+                {
+                    "scene_id": f"S{index + 1}",
+                    "location_id": location["id"],
+                    "time": location.get("time") or "白天",
+                    "description": beat[:400],
+                    "characters": present,
+                    "dialogues": [
+                        {
+                            "character_id": speaker["id"],
+                            "text": _dialogue_for(beat, speaker.get("name")),
+                            "emotion": _EMOTION_PALETTE[index % len(_EMOTION_PALETTE)],
+                        }
+                    ],
+                }
+            )
+
+        return {
+            "title": episode.get("title") or "本集",
+            "summary": summary[:400] or None,
+            "scenes": scenes,
+            "_mock": True,
+        }
+
+    def _build_storyboard(self, prompt: str) -> dict[str, Any]:
+        """Build one storyboard section per script scene, reusing its dialogue."""
+        script = _json_block(prompt, "script") or {}
+        roster = _json_block(prompt, "roster") or {}
+        locations = {loc["id"]: loc for loc in (roster.get("locations") or []) if loc.get("id")}
+        characters = {c["id"]: c for c in (roster.get("characters") or []) if c.get("id")}
+        style = h.infer_style("", self._hints(prompt)[1]) or "写实"
+
+        scenes: list[dict[str, Any]] = []
+        for scene in script.get("scenes") or []:
+            if not scene.get("scene_id"):
+                continue
+            location = locations.get(str(scene.get("location_id")), {})
+            environment = location.get("description") or "剧情发生的场景"
+            lighting = location.get("lighting") or "自然光"
+            scene_characters = scene.get("characters") or []
+            names = [
+                str(characters[cid]["name"])
+                for cid in scene_characters
+                if cid in characters and characters[cid].get("name")
+            ]
+            dialogues = scene.get("dialogues") or []
+
+            shots: list[dict[str, Any]] = []
+            # Opening establishing shot, then one shot per dialogue, then a
+            # closing beat -- enough shots to be realistic and to exercise the
+            # consistency checker's per-shot rules.
+            plan: list[dict[str, Any]] = [
+                {
+                    "size": "wide",
+                    "movement": "slow_push",
+                    "duration": 5,
+                    "dialogue": None,
+                    "characters": names,
+                }
+            ]
+            for index, line in enumerate(dialogues[:6]):
+                speaker = line.get("character_id")
+                speaker_name = (
+                    str(characters[speaker]["name"])
+                    if speaker in characters and characters[speaker].get("name")
+                    else None
+                )
+                plan.append(
+                    {
+                        "size": "medium_close_up" if index % 2 == 0 else "close_up",
+                        "movement": "static" if index % 2 == 0 else "push_in",
+                        "duration": 4,
+                        "dialogue": line.get("text"),
+                        "characters": [speaker_name] if speaker_name else names,
+                    }
+                )
+            plan.append(
+                {
+                    "size": "medium",
+                    "movement": "pull_out",
+                    "duration": 5,
+                    "dialogue": None,
+                    "characters": names,
+                }
+            )
+
+            for index, shot_plan in enumerate(plan, start=1):
+                prompted = [
+                    name
+                    for name in (shot_plan["characters"] or [])
+                    if name in {str(c.get("name")) for c in characters.values()}
+                ]
+                appearance = "；".join(
+                    filter(
+                        None,
+                        (
+                            str(characters[cid].get("appearance") or "")
+                            for cid in scene_characters
+                            if cid in characters and characters[cid].get("name") in prompted
+                        ),
+                    )
+                )
+                shots.append(
+                    {
+                        "shot_number": index,
+                        "duration": shot_plan["duration"],
+                        "shot_size": shot_plan["size"],
+                        "camera_movement": shot_plan["movement"],
+                        "characters": prompted,
+                        "action": _action_for(shot_plan["size"]),
+                        "expression": _EMOTION_PALETTE[index % len(_EMOTION_PALETTE)],
+                        "dialogue": shot_plan["dialogue"],
+                        "visual_description": (
+                            f"{environment}，{lighting}，"
+                            f"{'、'.join(prompted) or '无人物'}{_action_for(shot_plan['size'])}"
+                        )[:400],
+                        # Deliberately mentions style + lighting + appearance, so
+                        # the consistency checker's substring evidence has
+                        # something real to find on a clean storyboard.
+                        "image_prompt": (
+                            f"{style}风格漫剧分镜，{shot_plan['size']}景别，"
+                            f"{environment}，{lighting}，"
+                            f"{'、'.join(prompted) or '空镜'}，"
+                            f"{appearance or '环境为主体'}，画面氛围沉静"
+                        )[:2000],
+                        "video_prompt": (
+                            f"镜头{_MOVEMENT_TEXT.get(shot_plan['movement'], '固定')}，"
+                            "画面内人物动作自然衔接，无闪烁"
+                        ),
+                    }
+                )
+
+            scenes.append({"scene_id": str(scene["scene_id"]), "shots": shots})
+
+        return {"scenes": scenes, "_mock": True}
 
 
 __all__ = ["MockLLMProvider"]

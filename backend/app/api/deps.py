@@ -20,6 +20,7 @@ from app.models.user import User
 from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
 from app.services.bible_service import CharacterService, LocationService
+from app.services.episode_service import EpisodeService
 from app.services.project_service import ProjectService
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -50,6 +51,10 @@ def get_location_service(db: DbSession) -> LocationService:
     return LocationService(db)
 
 
+def get_episode_service(db: DbSession) -> EpisodeService:
+    return EpisodeService(db)
+
+
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     auth: Annotated[AuthService, Depends(get_auth_service)],
@@ -71,6 +76,7 @@ ProjectServiceDep = Annotated[ProjectService, Depends(get_project_service)]
 AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
 CharacterServiceDep = Annotated[CharacterService, Depends(get_character_service)]
 LocationServiceDep = Annotated[LocationService, Depends(get_location_service)]
+EpisodeServiceDep = Annotated[EpisodeService, Depends(get_episode_service)]
 
 __all__ = [
     "AgentServiceDep",
@@ -79,6 +85,7 @@ __all__ = [
     "CharacterServiceDep",
     "CurrentUser",
     "DbSession",
+    "EpisodeServiceDep",
     "LocationServiceDep",
     "ProjectServiceDep",
     "bearer_scheme",
@@ -87,6 +94,7 @@ __all__ = [
     "get_character_service",
     "get_current_user",
     "get_db",
+    "get_episode_service",
     "get_location_service",
     "get_project_service",
     "get_settings",

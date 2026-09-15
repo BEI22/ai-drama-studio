@@ -50,7 +50,7 @@ import app.models  # noqa: E402,F401  (registers tables on Base.metadata)
 from app.core.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 
-TEST_TABLES = ("characters", "locations", "episodes", "projects", "users")
+TEST_TABLES = ("shots", "characters", "locations", "episodes", "projects", "users")
 
 
 @pytest.fixture(scope="session", autouse=True)

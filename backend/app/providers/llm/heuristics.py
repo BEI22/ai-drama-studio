@@ -674,3 +674,17 @@ def infer_title(text: str, fallback: str | None = None) -> str:
     if fallback:
         return fallback
     return first_clause(text) or "未命名故事"
+
+
+def episode_title(sentences: list[str], index: int) -> str:
+    """A short,看點式 episode title from that episode's own sentences.
+
+    Phase 4's planner prompt asks for a hook-style title rather than "第 N 集",
+    so the offline provider derives one from the beat it was given. Falls back to
+    a positional title only when the sentences carry nothing usable.
+    """
+    for sentence in sentences:
+        clause = first_clause(sentence, max_length=12)
+        if clause and len(clause) >= 3:
+            return clause
+    return f"第 {index + 1} 集"

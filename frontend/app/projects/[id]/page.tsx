@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
+import { EpisodesTab } from "@/components/episode-agent";
 import { ErrorState, LoadingState, SignInRequired } from "@/components/states";
 import {
   AnalysisBadge,
@@ -30,7 +31,7 @@ const TABS = [
 ] as const;
 
 /** Highest phase delivered so far -- drives the "not implemented" placeholders. */
-const DELIVERED_PHASE = 3;
+const DELIVERED_PHASE = 4;
 
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -178,8 +179,8 @@ export default function ProjectDetailPage() {
               <p className="text-sm text-slate-300">{activeTab.label} 尚未实现</p>
               <p className="max-w-md text-xs leading-relaxed text-slate-500">
                 该模块计划在 Phase {activeTab.phase} 交付。目前已完成到 Phase {DELIVERED_PHASE}
-                ：项目 CRUD、故事文本、以及 Story Agent 解析出的 Story Bible /
-                人物 / 场景。
+                ：项目 CRUD、故事文本、Story Agent 解析出的 Story Bible / 人物 / 场景，
+                以及 Episode Agent 的分集、剧本与分镜。
               </p>
             </div>
           ) : tab === "overview" ? (
@@ -228,6 +229,14 @@ export default function ProjectDetailPage() {
                 if (bible) setBible({ ...bible, locations: next });
               }}
             />
+          ) : tab === "episodes" ? (
+            <EpisodesTab
+              projectId={project.id}
+              analysisStatus={project.analysis_status}
+              characters={bible?.characters ?? []}
+              locations={bible?.locations ?? []}
+              onEpisodesChanged={load}
+            />
           ) : (
             <SettingsTab project={project} onChanged={load} />
           )}
@@ -251,17 +260,22 @@ function OverviewTab({
   bibleLoading: boolean;
   bibleError: ApiError | null;
   onRetryBible: () => void;
-  onOpenTab: (tab: "characters" | "locations") => void;
+  onOpenTab: (tab: "characters" | "locations" | "episodes") => void;
 }) {
-  const steps = [
-    { label: "项目创建", done: true },
-    { label: "故事文本录入", done: project.has_story },
-    { label: "故事解析（Story Bible）", done: project.analysis_status === "SUCCEEDED" },
-    { label: "剧本生成", done: project.episodes.length > 0 },
-    { label: "分镜生成", done: false },
-    { label: "图片生成", done: false },
-    { label: "视频生成", done: false },
-    { label: "配音 / 字幕 / 合成", done: false },
+  const steps: { label: string; done: boolean | null; phase: number }[] = [
+    { label: "项目创建", done: true, phase: 2 },
+    { label: "故事文本录入", done: project.has_story, phase: 2 },
+    { label: "故事解析（Story Bible）", done: project.analysis_status === "SUCCEEDED", phase: 3 },
+    { label: "分集规划", done: project.episode_count > 0, phase: 4 },
+    // `null` means "this panel cannot know". The project detail payload carries
+    // only an episode *count*, so whether those episodes actually have scripts
+    // and storyboards is reported by the 剧集 tab -- guessing here would show a
+    // confident "待开发" for work that is already done.
+    { label: "剧本生成", done: null, phase: 4 },
+    { label: "分镜生成", done: null, phase: 4 },
+    { label: "图片生成", done: null, phase: 5 },
+    { label: "视频生成", done: null, phase: 6 },
+    { label: "配音 / 字幕 / 合成", done: null, phase: 7 },
   ];
 
   return (
@@ -324,6 +338,9 @@ function OverviewTab({
               <button type="button" className="btn-ghost" onClick={() => onOpenTab("locations")}>
                 查看场景（{project.location_count}）
               </button>
+              <button type="button" className="btn-ghost" onClick={() => onOpenTab("episodes")}>
+                查看剧集（{project.episode_count}）
+              </button>
             </div>
           </div>
         ) : (
@@ -341,22 +358,37 @@ function OverviewTab({
           <span className="text-[11px] text-slate-500">Phase {DELIVERED_PHASE} / 8</span>
         </div>
         <ol className="mt-4 space-y-2 text-xs">
-          {steps.map((step) => (
-            <li key={step.label} className="flex items-center justify-between gap-4">
-              <span className={step.done ? "text-slate-300" : "text-slate-500"}>
-                {step.label}
-              </span>
-              <span
-                className={`badge ${
-                  step.done
-                    ? "border-accent-500/40 bg-accent-500/10 text-accent-400"
-                    : "border-ink-600 bg-ink-850 text-slate-600"
-                }`}
-              >
-                {step.done ? "完成" : "待开发"}
-              </span>
-            </li>
-          ))}
+          {steps.map((step) => {
+            // `done === null` means this panel cannot know the state; point the
+            // user at the tab that owns the data instead of showing a verdict.
+            const viewable = step.done === null && step.phase <= DELIVERED_PHASE;
+            return (
+              <li key={step.label} className="flex items-center justify-between gap-4">
+                <span className={step.done === true ? "text-slate-300" : "text-slate-500"}>
+                  {step.label}
+                </span>
+                {viewable ? (
+                  <button
+                    type="button"
+                    className="text-[11px] text-brand-400 transition-colors hover:text-brand-300"
+                    onClick={() => onOpenTab("episodes")}
+                  >
+                    在剧集查看 →
+                  </button>
+                ) : (
+                  <span
+                    className={`badge ${
+                      step.done === true
+                        ? "border-accent-500/40 bg-accent-500/10 text-accent-400"
+                        : "border-ink-600 bg-ink-850 text-slate-600"
+                    }`}
+                  >
+                    {step.done === true ? "完成" : step.done === false ? "待办" : "待开发"}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ol>
       </div>
     </div>

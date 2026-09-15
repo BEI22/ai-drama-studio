@@ -24,6 +24,9 @@ class StoryInput(TypedDict, total=False):
     genre: str | None
     style: str | None
     project_name: str | None
+    # How many episodes the planner should aim for (Phase 4). Optional: the
+    # planner has its own default so a caller can leave it unset.
+    episode_count: int | None
 
 
 class WorkflowError(TypedDict):
@@ -59,6 +62,9 @@ class StoryState(TypedDict, total=False):
     episode_plan: dict[str, Any]
     script: dict[str, Any]
     storyboard: dict[str, Any]
+    # Consistency audit of the generated script/storyboard (PRD section 19).
+    # A report, not a gate -- see app/agents/consistency.py.
+    consistency: dict[str, Any]
 
     errors: list[WorkflowError]
     current_step: str

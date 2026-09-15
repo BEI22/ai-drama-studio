@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -92,11 +93,20 @@ async def generate_structured(
     schema: type[ModelT],
     *,
     max_retries: int | None = None,
+    post_validate: Callable[[ModelT], None] | None = None,
 ) -> tuple[ModelT, LLMResult]:
     """Call ``provider`` until its output validates against ``schema``.
 
     Returns the validated model plus the raw :class:`LLMResult` of the successful
     call (so callers can record tokens/model/prompt version).
+
+    ``post_validate`` runs after schema validation and may raise ``ValueError`` to
+    force a retry with the reason fed back to the model. It exists because some
+    requirements cannot be expressed in the schema alone -- PRD section 10's
+    "不允许 AI 随意创建数据库中不存在的人物 ID" needs to compare the output against
+    the project's actual roster, which the schema has no access to. Keeping it
+    here means there is still exactly one retry mechanism rather than a second
+    hand-rolled loop in the node.
     """
     attempts = max(1, max_retries if max_retries is not None else settings.llm_max_retries)
 
@@ -127,6 +137,8 @@ async def generate_structured(
         try:
             payload = extract_json(result.text)
             validated = schema.model_validate(payload)
+            if post_validate is not None:
+                post_validate(validated)
         except (ValueError, ValidationError) as exc:
             last_error_text = _format_error(exc)
             logger.warning(

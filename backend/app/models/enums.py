@@ -30,6 +30,21 @@ class EpisodeStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class GenerationStatus(StrEnum):
+    """Run state of a per-episode generation step.
+
+    Mirrors :class:`AnalysisStatus` on the project: script and storyboard each
+    get their own state so the UI can say "剧本已生成 / 分镜失败" without inferring
+    it from whether a JSON column happens to be null, and so a failure keeps a
+    readable error for a retry.
+    """
+
+    NOT_GENERATED = "NOT_GENERATED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
 class AssetType(StrEnum):
     """PRD section 17."""
 
@@ -100,3 +115,49 @@ class AnalysisStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+
+
+class ShotStatus(StrEnum):
+    """Lifecycle of one storyboard shot (PRD section 17 ``shots.status``).
+
+    ``READY`` means the storyboard row is complete and its prompts are usable;
+    the media states belong to Phases 5-7, which set them as assets arrive.
+    """
+
+    DRAFT = "DRAFT"
+    READY = "READY"
+    GENERATING = "GENERATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class ShotSize(StrEnum):
+    """Camera framing vocabulary (PRD section 11, ``shot_size``).
+
+    A closed vocabulary is what makes the later image prompts predictable --
+    a free-text field would let the model invent "中景偏近" and the pipeline
+    would have no idea how to use it.
+    """
+
+    EXTREME_WIDE = "extreme_wide"
+    WIDE = "wide"
+    MEDIUM = "medium"
+    MEDIUM_CLOSE_UP = "medium_close_up"
+    CLOSE_UP = "close_up"
+    EXTREME_CLOSE_UP = "extreme_close_up"
+
+
+class CameraMovement(StrEnum):
+    """Camera movement vocabulary (PRD section 11, ``camera_movement``)."""
+
+    STATIC = "static"
+    SLOW_PUSH = "slow_push"
+    PUSH_IN = "push_in"
+    PULL_OUT = "pull_out"
+    PAN_LEFT = "pan_left"
+    PAN_RIGHT = "pan_right"
+    TILT_UP = "tilt_up"
+    TILT_DOWN = "tilt_down"
+    TRACKING = "tracking"
+    CRANE = "crane"
+    HANDHELD = "handheld"

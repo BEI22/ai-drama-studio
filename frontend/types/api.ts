@@ -1,6 +1,6 @@
 /**
- * Phase 3 domain types: Story Agent, Story Bible, characters and locations
- * (PRD sections 6, 7, 8, 9, 17, 26).
+ * Domain types for the Story Agent (Phase 3) and the Episode Agent (Phase 4)
+ * — PRD sections 6-11, 17, 19, 26.
  *
  * Deliberately self-contained -- it does not import from ``lib/api`` so the two
  * modules can't form an import cycle. Project/user/session types live in
@@ -192,9 +192,15 @@ export const ANALYSIS_BADGE_CLASS: Record<AnalysisStatus, string> = {
 
 /** Node id -> Chinese label, for the usage/cost table. */
 export const NODE_LABELS: Record<string, string> = {
+  // Phase 3 -- Story Agent (PRD section 12)
   story_parser: "故事解析",
   character_extractor: "人物提取",
   location_extractor: "场景提取",
+  // Phase 4 -- Episode Agent (PRD section 12)
+  episode_planner: "分集规划",
+  script_generator: "剧本生成",
+  storyboard_generator: "分镜生成",
+  consistency_checker: "一致性检查",
 };
 
 /** Human labels for the model-invented extension keys we see in practice. */
@@ -226,3 +232,364 @@ export const EXTENSION_LABELS: Record<string, string> = {
   synopsis: "故事梗概",
   notes: "补充说明",
 };
+
+// =========================================================================== #
+// Phase 4 -- Episode Agent: episodes, script, storyboard, shots
+// (PRD sections 9, 10, 11, 19, 38)
+// =========================================================================== #
+
+/**
+ * Per-step run state for a generated artefact.
+ *
+ * ``FAILED`` is not the same as "never generated": the previous successful
+ * artefact is kept, so a failed regeneration can be retried without losing work.
+ */
+export type GenerationStatus = "NOT_GENERATED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+
+export type EpisodeStatus =
+  | "DRAFT"
+  | "PLANNING"
+  | "SCRIPTING"
+  | "STORYBOARDING"
+  | "GENERATING"
+  | "COMPOSING"
+  | "COMPLETED"
+  | "FAILED";
+
+/** PRD section 11 shot-size vocabulary. Closed set -- the backend rejects others. */
+export type ShotSize =
+  | "extreme_wide"
+  | "wide"
+  | "medium"
+  | "medium_close_up"
+  | "close_up"
+  | "extreme_close_up";
+
+/** PRD section 11 camera-movement vocabulary. Closed set. */
+export type CameraMovement =
+  | "static"
+  | "slow_push"
+  | "push_in"
+  | "pull_out"
+  | "pan_left"
+  | "pan_right"
+  | "tilt_up"
+  | "tilt_down"
+  | "tracking"
+  | "crane"
+  | "handheld";
+
+export type ShotStatus = "DRAFT" | "READY" | "GENERATING" | "COMPLETED" | "FAILED";
+
+/** Episode as returned by the API (``EpisodeOut``). */
+export interface Episode {
+  id: string;
+  project_id: string;
+  episode_number: number;
+  title: string | null;
+  summary: string | null;
+  duration: number;
+  status: EpisodeStatus;
+
+  script_status: GenerationStatus;
+  storyboard_status: GenerationStatus;
+  generation_error: string | null;
+  script_generated_at: string | null;
+  storyboard_generated_at: string | null;
+
+  /** Derived flags so the list renders without fetching every script. */
+  has_script: boolean;
+  has_storyboard: boolean;
+  shot_count: number;
+
+  created_at: string;
+  updated_at: string;
+}
+
+/** Provenance of the plan, stored alongside the episodes (PRD section 26). */
+export interface EpisodePlanMeta {
+  provider?: string;
+  model?: string;
+  mock?: boolean;
+  prompt_versions?: Record<string, string>;
+  usage?: UsageRecord[];
+  [key: string]: unknown;
+}
+
+export interface EpisodeListResponse {
+  items: Episode[];
+  totals: { episodes: number; characters: number; locations: number };
+  plan_meta: EpisodePlanMeta | null;
+  analysis_status: AnalysisStatus;
+}
+
+// -------------------------------------------------------------------- script
+export interface Dialogue {
+  /** A real Character Bible uuid -- never a name (PRD section 10). */
+  character_id: string;
+  text: string;
+  emotion: string | null;
+}
+
+export interface ScriptScene {
+  /** ``S1``, ``S2`` … normalised by the backend to be unique and ordered. */
+  scene_id: string;
+  /** A real Scene Bible uuid. */
+  location_id: string;
+  time: string | null;
+  description: string | null;
+  /** Character ids present in this scene. */
+  characters: string[];
+  dialogues: Dialogue[];
+}
+
+export interface ScriptContent {
+  title: string | null;
+  summary: string | null;
+  scenes: ScriptScene[];
+}
+
+export interface ScriptResponse {
+  episode_id: string;
+  script_status: GenerationStatus;
+  has_script: boolean;
+  script: ScriptContent | null;
+  meta: BibleMeta | null;
+  /** id -> name, so the UI can render speakers without a second request. */
+  characters: Record<string, string>;
+}
+
+// ---------------------------------------------------------------- storyboard
+/**
+ * A shot as persisted (``ShotOut``).
+ *
+ * Note on the two ``characters`` fields that exist in this domain: a **shot**
+ * carries display **names** (that is what the model writes and what the
+ * consistency checker verifies against the Bible), while a **script dialogue**
+ * carries a character **id**. Resolve names through the project's character list.
+ */
+export interface Shot {
+  id: string;
+  episode_id: string;
+  scene_id: string;
+  /** Restarts at 1 inside every scene (PRD section 11). */
+  shot_number: number;
+  /** Absolute order across the whole episode -- stable for rendering and Phase 5. */
+  sequence: number;
+  duration: number;
+  shot_size: ShotSize;
+  camera_movement: CameraMovement;
+  characters: string[];
+  action: string | null;
+  expression: string | null;
+  dialogue: string | null;
+  visual_description: string | null;
+  image_prompt: string | null;
+  video_prompt: string | null;
+  status: ShotStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+/** PRD section 11's per-scene object, as returned in the storyboard document. */
+export interface SceneStoryboard {
+  scene_id: string;
+  shots: ShotDraft[];
+}
+
+/** A shot inside the storyboard document (pre-persistence shape). */
+export interface ShotDraft {
+  shot_number: number;
+  duration: number;
+  shot_size: ShotSize;
+  camera_movement: CameraMovement;
+  characters: string[];
+  action: string | null;
+  expression: string | null;
+  dialogue: string | null;
+  visual_description: string | null;
+  image_prompt: string | null;
+  video_prompt: string | null;
+}
+
+export interface StoryboardContent {
+  scenes: SceneStoryboard[];
+}
+
+// -------------------------------------------------------------- consistency
+export type IssueSeverity = "ERROR" | "WARNING" | "INFO";
+
+/** PRD section 19: one way the generated content disagrees with the Bibles. */
+export interface ConsistencyIssue {
+  code: string;
+  severity: IssueSeverity;
+  message: string;
+  scene_id: string | null;
+  shot_number: number | null;
+  field: string | null;
+}
+
+export interface ConsistencyReport {
+  issues: ConsistencyIssue[];
+  checked_shots: number;
+  checked_scenes: number;
+}
+
+/** The ``GET /consistency`` shape adds derived counts and a verdict. */
+export interface ConsistencyResponse extends ConsistencyReport {
+  episode_id: string;
+  errors: number;
+  warnings: number;
+  ok: boolean;
+}
+
+export interface StoryboardResponse {
+  episode_id: string;
+  storyboard_status: GenerationStatus;
+  has_storyboard: boolean;
+  storyboard: StoryboardContent | null;
+  shots: Shot[];
+  consistency: ConsistencyReport | null;
+  meta: BibleMeta | null;
+  characters: Record<string, string>;
+}
+
+// ------------------------------------------------------------------- inputs
+export interface EpisodeCreateInput {
+  title: string;
+  episode_number?: number;
+  summary?: string | null;
+  duration?: number;
+}
+
+export interface EpisodeUpdateInput {
+  episode_number?: number;
+  title?: string;
+  summary?: string | null;
+  duration?: number;
+  status?: EpisodeStatus;
+}
+
+export interface ScriptUpdateInput {
+  title?: string | null;
+  summary?: string | null;
+  scenes?: ScriptScene[];
+}
+
+/** Only supplied fields change. Enums are validated strictly, unlike model output. */
+export interface ShotUpdateInput {
+  duration?: number;
+  shot_size?: ShotSize;
+  camera_movement?: CameraMovement;
+  characters?: string[];
+  action?: string | null;
+  expression?: string | null;
+  dialogue?: string | null;
+  visual_description?: string | null;
+  image_prompt?: string | null;
+  video_prompt?: string | null;
+  status?: ShotStatus;
+}
+
+// ----------------------------------------------------------------- label maps
+export const GENERATION_LABELS: Record<GenerationStatus, string> = {
+  NOT_GENERATED: "未生成",
+  RUNNING: "生成中",
+  SUCCEEDED: "已生成",
+  FAILED: "生成失败",
+};
+
+export const GENERATION_BADGE_CLASS: Record<GenerationStatus, string> = {
+  NOT_GENERATED: "bg-slate-500/15 text-slate-400 ring-slate-500/30",
+  RUNNING: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+  SUCCEEDED: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  FAILED: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
+};
+
+export const EPISODE_STATUS_LABELS: Record<EpisodeStatus, string> = {
+  DRAFT: "草稿",
+  PLANNING: "规划中",
+  SCRIPTING: "写剧本",
+  STORYBOARDING: "画分镜",
+  GENERATING: "生成中",
+  COMPOSING: "合成中",
+  COMPLETED: "已完成",
+  FAILED: "失败",
+};
+
+export const SHOT_SIZE_LABELS: Record<ShotSize, string> = {
+  extreme_wide: "大远景",
+  wide: "远景",
+  medium: "中景",
+  medium_close_up: "中近景",
+  close_up: "特写",
+  extreme_close_up: "大特写",
+};
+
+export const CAMERA_MOVEMENT_LABELS: Record<CameraMovement, string> = {
+  static: "固定",
+  slow_push: "缓推",
+  push_in: "推镜",
+  pull_out: "拉镜",
+  pan_left: "左摇",
+  pan_right: "右摇",
+  tilt_up: "上摇",
+  tilt_down: "下摇",
+  tracking: "跟拍",
+  crane: "升降",
+  handheld: "手持",
+};
+
+export const SEVERITY_LABELS: Record<IssueSeverity, string> = {
+  ERROR: "错误",
+  WARNING: "警告",
+  INFO: "提示",
+};
+
+export const SEVERITY_BADGE_CLASS: Record<IssueSeverity, string> = {
+  ERROR: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
+  WARNING: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  INFO: "bg-slate-500/15 text-slate-400 ring-slate-500/30",
+};
+
+/** Consistency issue code -> Chinese explanation. */
+export const ISSUE_LABELS: Record<string, string> = {
+  UNKNOWN_CHARACTER: "镜头里出现了人物设定中不存在的角色",
+  SCENE_NOT_IN_SCRIPT: "该镜头所属场景不在剧本中",
+  SCENE_WITHOUT_SHOTS: "该场景没有任何镜头",
+  SCENE_WITHOUT_DIALOGUE: "该场景有角色出场但没有台词",
+  SPEAKER_NOT_IN_SCENE: "有台词的角色未列入本场出场角色",
+  IMAGE_PROMPT_MISSING: "缺少文生图提示词",
+  VIDEO_PROMPT_MISSING: "缺少图生视频提示词",
+  VISUAL_DESCRIPTION_MISSING: "缺少画面描述",
+  APPEARANCE_NOT_IN_PROMPT: "提示词里没有体现出人物的外貌设定",
+  SCENE_CONTEXT_MISSING: "提示词没有描述任何环境或光线（会画出没有背景的画面）",
+  STYLE_NOT_IN_PROMPT: "提示词里没有带上项目画风",
+  SHOT_TOO_LONG: "单个镜头过长",
+  SHOT_DURATION_INVALID: "镜头时长非法",
+  EPISODE_DURATION_MISMATCH: "分镜总时长与本集目标时长偏差过大",
+  DIALOGUE_NOT_IN_SCRIPT: "镜头台词与剧本不一致",
+};
+
+export const SHOT_SIZES: ShotSize[] = [
+  "extreme_wide",
+  "wide",
+  "medium",
+  "medium_close_up",
+  "close_up",
+  "extreme_close_up",
+];
+
+export const CAMERA_MOVEMENTS: CameraMovement[] = [
+  "static",
+  "slow_push",
+  "push_in",
+  "pull_out",
+  "pan_left",
+  "pan_right",
+  "tilt_up",
+  "tilt_down",
+  "tracking",
+  "crane",
+  "handheld",
+];

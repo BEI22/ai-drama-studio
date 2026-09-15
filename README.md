@@ -137,24 +137,35 @@ npm run lint        # ruff check + format --check（backend + scripts 全覆盖�
 npm run test        # 后端 pytest（hermetic）
 npm run typecheck   # 前端 tsc --noEmit
 npm run build       # 前端生产构建 + 容器镜像
-npm run verify      # 三份端到端验收脚本
-npm run verify:ui   # 真实 Chrome 渲染 UI（Playwright）
+npm run verify      # 全部端到端验收脚本（Phase 1-4）
+npm run verify:phase4  # 只跑 Phase 4 的那一份
+npm run verify:ui   # 真实 Chrome 渲染 UI（Playwright，Phase 3 + Phase 4）
 npm run seed        # 造演示账号 + 已解析项目
 npm run up / down   # 启停 compose 栈
 ```
 
-当前结果：**316 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
+当前结果：**442 passed**（健康检查契约、统一响应 Envelope、request_id、错误处理器、
 ORM 持久化与约束、密码/JWT、日志脱敏、配置解析、认证 API、项目 CRUD、故事读写、
-跨用户越权隔离、Story Agent 与 Bible 别名归一化、溯源落库）。
+跨用户越权隔离、Story Agent 与 Bible 别名归一化、溯源落库、
+Episode Agent 的分集/剧本/分镜 schema 与 id 绑定、一致性检查器（含 dict 与 Pydantic
+两种输入形状的一致性）、剧集 API 与守卫）。
 
 ### 端到端验收
 
 ```bash
-npm run verify                     # 等价于下面三条
-bash scripts/verify_phase1.sh      # 18 项：健康检查 / Envelope / request_id / 404
-python scripts/verify_phase2.py    # 84 项：认证 / 项目CRUD / 故事 / 越权隔离
+npm run verify                     # 等价于下面四条
+bash scripts/verify_phase1.sh      #  18 项：健康检查 / Envelope / request_id / 404
+python scripts/verify_phase2.py    #  84 项：认证 / 项目CRUD / 故事 / 越权隔离
 python scripts/verify_phase3.py    # 132 项：Story Agent / Bible / 人物场景 CRUD / 隔离
+python scripts/verify_phase4.py    #  87 项：分集规划 / 剧本 / 分镜 / 镜头 / 一致性 / 隔离
 ```
+
+浏览器验收（`npm run verify:ui`）会依次跑两套脚本，各自用真实模型造数据后驱动 Chrome：
+
+| 脚本 | 断言 |
+| --- | --- |
+| `verify_ui_phase3.py` | 概览 / Story Bible / 人物 / 场景 渲染，18 项 |
+| `verify_ui_phase4.py` | 剧集列表 / 剧本 / 分镜 / 一致性面板，以及「改镜头后刷新仍在」 |
 
 > 验收脚本用 Python 而非 curl+bash：在 Windows/git-bash 下用
 > `curl -d` 内联中文会被 shell 重新编码，后端直接以 400 拒绝 body，
@@ -251,6 +262,40 @@ curl -s -X POST http://localhost:8000/api/v1/projects \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"kaitou","genre":"urban"}' | python -m json.tool
 ```
+
+### Episode Agent（Phase 4）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/projects/{id}/episodes` | 分集列表（含 `shot_count` 等派生字段与规划溯源） |
+| POST | `/api/v1/projects/{id}/episodes` | 手动新增一集（不填编号则取下一个） |
+| POST | `/api/v1/projects/{id}/episodes/plan` | 运行 `episode_planner`（`?replace=true` 才覆盖已有计划） |
+| DELETE | `/api/v1/projects/{id}/episodes` | 清空分集计划 |
+| GET/PATCH/DELETE | `/api/v1/episodes/{id}` | 剧集详情 / 修改 / 删除 |
+| GET | `/api/v1/episodes/{id}/script` | 剧本（含 `characters` 的 id→name 查表） |
+| POST | `/api/v1/episodes/{id}/script/generate` | 生成剧本 |
+| PATCH | `/api/v1/episodes/{id}/script` | 修改剧本（`scenes` 整体替换） |
+| GET | `/api/v1/episodes/{id}/storyboard` | 分镜文档 + 扁平镜头表 + 一致性报告 |
+| POST | `/api/v1/episodes/{id}/storyboard/generate` | 生成分镜并自动跑一致性检查 |
+| PATCH | `/api/v1/episodes/{id}/storyboard` | 修改分镜文档 |
+| GET | `/api/v1/episodes/{id}/shots` | 镜头列表 |
+| PATCH | `/api/v1/shots/{id}` | 修改单个镜头 |
+| GET | `/api/v1/episodes/{id}/consistency` | 复检一致性（不调用模型，可随时跑） |
+
+说明：
+
+- **id 必须绑定到真实数据**：剧本里的 `character_id` / `location_id` 若不在
+  Character/Scene Bible 中，节点会**重试模型**；重试用尽则本次生成失败，
+  **不会**把悬空 id 落库（PRD §10）。
+- **先剧本后分镜**：未生成剧本就请求分镜返回 409。
+- **`plan` 的守卫**：故事未解析返回 409；已有计划而不传 `replace=true` 也返回 409，
+  避免静默删掉已有剧本与分镜。
+- **重新生成剧本会作废分镜**（旧 shots 全部删除）。因为镜头挂在 `scene_id` 上，
+  剧本一改旧镜头就指向不存在的场次。
+- **失败不销毁旧产出**：`script_status=FAILED` 时上一次的剧本仍在。
+- **`PATCH /shots/{id}` 严格校验枚举**：`shot_size` / `camera_movement` 传未知值返回 422，
+  不会被静默改成默认值（与模型输出不同 —— 模型的草稿值允许兜底）。
+- **越权一律 404**：剧集归属需穿过 `project.user_id` 判定。
 
 Phase 3 起按 PRD §22 补齐 `/analyze`、`/bible`、characters、locations、episodes、
 script、storyboard、shots、compose、tasks 等接口。
@@ -350,16 +395,46 @@ script、storyboard、shots、compose、tasks 等接口。
 
 ---
 
-## 下一步：Phase 4（Episode Agent）
+### Phase 4 — Episode Agent
 
-1. Episode Planner：把 Story Bible 拆成分集大纲
-2. Script Agent：单集剧本（场次 / 台词）
-3. Storyboard Agent：分镜表
-4. Consistency Agent：跨集一致性校验（角色 / 设定 / 时间线）
-5. `episodes` / `scenes` / `shots` 相关表与迁移 `0004`
-6. 复用 Phase 3 的 `generate_structured()` 与 Provider 抽象，**不要另起一套**
+- [x] LangGraph 全链：`story_parser → character_extractor → location_extractor
+      → episode_planner → script_generator → storyboard_generator → consistency_checker`
+- [x] 四个**单节点图**（规划 / 剧本 / 分镜），只重跑某一集不必从故事解析开始
+- [x] `generate_structured()` 增加 `post_validate` 回调，表达 schema 之外的硬约束
+- [x] **id 绑定校验**：剧本里的 `character_id` / `location_id` 必须存在于数据库，
+      模型写角色名而非 id 会被识别并重试（PRD §10）
+- [x] **分镜必须覆盖剧本的每个场景**，不多不少；缺场景会重试而不是静默丢戏
+- [x] 重试用尽即失败，**绝不把带悬空 id 的数据落库**
+- [x] 确定性一致性检查器（不调模型）：人物 / 场景 / 画风 / 光照 / 时长 / 台词逐项核对
+- [x] `shots` 表 + 迁移 `0004`（双库零漂移、可回滚）；`shot_number`（场内）与
+      `sequence`（全篇绝对序）并存，为 Phase 5-7 挂媒体预留 `*_asset_id`
+- [x] 14 个接口：分集 CRUD、规划、剧本读写与生成、分镜读写与生成、镜头列表与修改、一致性复检
+- [x] 守卫：未解析 / 重复规划 / 先分镜后剧本均 409；重新生成剧本会作废旧分镜
+- [x] 失败不销毁旧产出：`script_status=FAILED` 时上一次的剧本仍可查看
+- [x] `PATCH /shots/{id}` 严格校验枚举 —— 用户输入永不被静默改写（与模型输出策略不同）
+- [x] 前端：剧集 tab（分集列表 / 剧本视图 / 分镜卡片 / 一致性面板，镜头可手改）
+- [x] 前端：长时间生成显示已用秒数（剧本约 25s、分镜约 60s），避免重复点击
+- [x] pytest **442 项**全绿；ruff 全通过
+- [x] 端到端验收脚本：`verify_phase4.py`（87 项，真实 HTTP + 真实模型下 **0 失败**）
+- [x] 浏览器验收 `verify_ui_phase4.py`：剧集列表 / 剧本 / 分镜 / 改镜头后刷新仍在，无 console 错误
 
-> 注意：Phase 4 **不要**碰图片、视频、TTS —— 那些属 Phase 5–8。
+**未做（刻意）**：图片 / 视频 / TTS / 合成、Celery 异步化、token 成本计量、
+分镜的局部重生成、真正的视觉一致性比对（现为文本子串证据）。
+
+已知限制：生成仍是**同步阻塞**的；一致性检查里的「像不像」判定是子串匹配而非视觉理解
+（详见 docs/TDD.md §18.9）。
+
+---
+
+## 下一步：Phase 5（图片生成）
+
+1. `ImageProvider` 抽象 + Mock 实现（沿用 Phase 1 接口，见 docs/TDD.md §10）
+2. 参考图与 Prompt Builder：把 Character/Scene/Style Bible 拼进绘图提示词
+3. Celery + Redis 异步任务：图片生成不能阻塞 HTTP
+4. `assets` 表；把生成结果挂到 `shots.image_asset_id`（列**已存在**，无需新迁移）
+5. 前端：素材 tab（`素材` / `生成任务` 两个 tab 仍是 Phase 5 占位）
+
+> 注意：Phase 5 **不要**碰视频与 TTS —— 那些属 Phase 6/7。
 
 ---
 

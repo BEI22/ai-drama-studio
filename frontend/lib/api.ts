@@ -16,9 +16,20 @@ import type {
   AnalyzeStatus,
   Character,
   CharacterWriteInput,
+  ConsistencyResponse,
   DeletedResult,
+  Episode,
+  EpisodeCreateInput,
+  EpisodeListResponse,
+  EpisodePlanMeta,
+  EpisodeUpdateInput,
   LocationWriteInput,
+  ScriptResponse,
+  ScriptUpdateInput,
+  Shot,
+  ShotUpdateInput,
   StoryBibleResponse,
+  StoryboardResponse,
   StoryLocation,
 } from "@/types/api";
 
@@ -27,14 +38,38 @@ export type {
   AnalysisStatus,
   AnalyzeStatus,
   BibleMeta,
+  CameraMovement,
   Character,
   CharacterRole,
   CharacterWriteInput,
+  ConsistencyIssue,
+  ConsistencyResponse,
   DeletedResult,
+  Dialogue,
+  Episode,
+  EpisodeCreateInput,
+  EpisodeListResponse,
+  EpisodePlanMeta,
+  EpisodeStatus,
+  EpisodeUpdateInput,
+  GenerationStatus,
+  IssueSeverity,
   LocationWriteInput,
+  SceneStoryboard,
+  ScriptContent,
+  ScriptResponse,
+  ScriptScene,
+  ScriptUpdateInput,
+  Shot,
+  ShotDraft,
+  ShotSize,
+  ShotStatus,
+  ShotUpdateInput,
   StoryBibleContent,
   StoryBibleResponse,
   StoryLocation,
+  StoryboardContent,
+  StoryboardResponse,
   UsageRecord,
 } from "@/types/api";
 
@@ -394,6 +429,73 @@ export const api = {
 
   deleteLocation: (locationId: string) =>
     request<DeletedResult>(`/locations/${locationId}`, { method: "DELETE" }),
+
+  // ------------------------------------------------------------------ phase 4
+  // Episode Agent: episodes, script, storyboard, shots (PRD sections 9-11, 19, 38).
+  //
+  // Generation calls are slow (a real model writes a whole script/storyboard),
+  // so callers must show progress and must not treat a long wait as a hang.
+
+  listEpisodes: (projectId: string) =>
+    request<EpisodeListResponse>(`/projects/${projectId}/episodes`),
+
+  /** Run the ``episode_planner`` node. Returns 409 if not analyzed, or if a plan
+   *  already exists and ``replace`` is false. */
+  planEpisodes: (
+    projectId: string,
+    input: { episodeCount?: number; replace?: boolean } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (input.episodeCount) query.set("episode_count", String(input.episodeCount));
+    if (input.replace) query.set("replace", "true");
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<{ items: Episode[]; plan_meta: EpisodePlanMeta | null }>(
+      `/projects/${projectId}/episodes/plan${suffix}`,
+      { method: "POST" },
+    );
+  },
+
+  createEpisode: (projectId: string, input: EpisodeCreateInput) =>
+    request<Episode>(`/projects/${projectId}/episodes`, { method: "POST", body: input }),
+
+  /** Drops every episode of the project, along with their scripts and shots. */
+  clearEpisodes: (projectId: string) =>
+    request<{ deleted: number }>(`/projects/${projectId}/episodes`, { method: "DELETE" }),
+
+  getEpisode: (episodeId: string) => request<Episode>(`/episodes/${episodeId}`),
+
+  updateEpisode: (episodeId: string, input: EpisodeUpdateInput) =>
+    request<Episode>(`/episodes/${episodeId}`, { method: "PATCH", body: input }),
+
+  deleteEpisode: (episodeId: string) =>
+    request<DeletedResult>(`/episodes/${episodeId}`, { method: "DELETE" }),
+
+  getScript: (episodeId: string) =>
+    request<ScriptResponse>(`/episodes/${episodeId}/script`),
+
+  /** Slow: a real model writes the whole script. */
+  generateScript: (episodeId: string) =>
+    request<ScriptResponse>(`/episodes/${episodeId}/script/generate`, { method: "POST" }),
+
+  updateScript: (episodeId: string, input: ScriptUpdateInput) =>
+    request<ScriptResponse>(`/episodes/${episodeId}/script`, { method: "PATCH", body: input }),
+
+  getStoryboard: (episodeId: string) =>
+    request<StoryboardResponse>(`/episodes/${episodeId}/storyboard`),
+
+  /** Slow: generates the storyboard and then runs the consistency checker. */
+  generateStoryboard: (episodeId: string) =>
+    request<StoryboardResponse>(`/episodes/${episodeId}/storyboard/generate`, { method: "POST" }),
+
+  listShots: (episodeId: string) => request<Shot[]>(`/episodes/${episodeId}/shots`),
+
+  /** Strict validation: an unknown enum value is rejected, never coerced. */
+  updateShot: (shotId: string, input: ShotUpdateInput) =>
+    request<Shot>(`/shots/${shotId}`, { method: "PATCH", body: input }),
+
+  /** Free and deterministic -- re-audits stored data without calling a model. */
+  checkConsistency: (episodeId: string) =>
+    request<ConsistencyResponse>(`/episodes/${episodeId}/consistency`),
 };
 
 export type { RequestOptions };

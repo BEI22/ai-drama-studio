@@ -190,16 +190,30 @@ healthcheck 与负载均衡使用。带依赖检查的版本是 `GET /api/v1/hea
   逐个 tab 断言关键元素可见，并**收集 console 错误**。
 - 截屏留证，便于人工复核视觉结果。
 
-三个必须避开的假绿：
+Phase 4 起每个阶段各有一份脚本，`npm run verify:ui` **按顺序全部执行**
+（写死单个脚本会让新阶段的 UI 悄悄逃过验证）：
+
+| 脚本 | 断言数 | 覆盖 |
+| --- | --- | --- |
+| `cache/verify_ui_phase3.py` | 18 | 概览 / Story Bible / 人物 / 场景 / 后阶段占位 |
+| `cache/verify_ui_phase4.py` | 见运行输出 | 剧集列表 / 剧本 / 分镜 / 一致性面板 / 改镜头后刷新仍在 |
+
+四个必须避开的假绿：
 
 1. **镜像里的前端是构建期产物**（`frontend` 服务没有挂载源码），
    改完前端**必须 `--build` 重建**，否则验的是旧 bundle。
 2. **宿主残留的 dev server 会抢 3000**，让验收连到旧进程（见 §13.13）。
 3. **locator 歧义**：`人物` 同时命中侧栏 tab 与「查看人物」按钮，
-   要把定位范围收敛到 `nav[aria-label="项目导航"]` 内。
+   要把定位范围收敛到 `nav[aria-label="项目导航"]` 内；
+   Phase 4 的「分镜」同时命中面板 tab 与「**生成**分镜」按钮 ——
+   用 `.first` 会点到后者并真的发起一次生成，见 §13.22。
+   定 tab 一律用 `get_by_role(..., name=..., exact=True)`，不要用 `has_text` 子串。
+4. **断言本身要能失败**（见 §13.4 与 §13.19）：先确认「无 console 错误」这条
+   监听器是活的（故意 `console.error` 一次能被捕获），
+   以及脚本里不要留下断言「某功能尚未实现」这类**会随交付过期**的检查。
 
 ```
-UI checks: passed=18 failed=0
+Phase 3 UI checks: passed=18 failed=0
 ```
 
 ---
@@ -341,6 +355,95 @@ docker compose
     backend 里每个 import 块都会被误报为未排序。
     教训：lint 配置应当放在**被检查范围的最上层目录**，并且「lint 干净」这句话
     必须带上「对哪些路径、从哪个 cwd」才成立。
+16. **`getattr(x, "f", None) or x.get("f")` 是个定时炸弹**（Phase 4 实测，本轮最严重的线上 500）。
+    一致性检查器要同时接受 **Pydantic 对象**（Agent 节点传入）与 **dict**（service/API 从 JSON 列读出），
+    于是写了这种「混合访问器」。它在属性**存在但取值为空**时崩溃：
+    空列表是 falsy，短路逻辑继续走到 `or` 右边，对 Pydantic 对象调 `.get()` →
+    `AttributeError: 'ScriptScene' object has no attribute 'get'`。
+    为什么难发现：只在**「有角色出场但一句台词都没有」的纯动作场景**触发，
+    所以看起来是间歇性的；而 mock provider 每个场景固定写一句台词，
+    **离线永远复现不出来**，只有真实模型产出这种场景才炸。
+    修法：抽一个统一的 `_get(obj, name)`（dict 走 `.get`，否则 `getattr`），
+    并让所有规则对**两种输入形状**都断言、且结果必须完全一致（`TestConsistencyShapeParity`）。
+    教训：**要兼容两种输入形状，就必须在一个地方统一处理**，不要在每个调用点临时判断；
+    并且「为空」必须被当成合法值，不能与「不存在」混为一谈。
+17. **用户输入被静默改写**（Phase 4 实测，与 §17.9 同源）。
+    `ShotUpdate`（用户手改分镜）原先复用了 `ShotDraft` 的枚举 coerce，
+    于是用户填 `超宽幅` 会被**悄悄改成 `medium` 并返回 200** —— 界面显示的不是用户选的值。
+    这违反了「用户输入只接受或拒绝，绝不改写」这条既有约定。
+    修法：`ShotDraft`（模型输出）继续 coerce —— 一个景别不精确好过整个分镜失败；
+    `ShotUpdate`（人类输入）改为严格校验，未知值直接 422。
+    教训：**「谁在输入」决定了校验策略**。同一份字段，模型输出与用户输入的处理必须分开写清楚。
+18. **MSYS 风格路径当「文件参数」传给 Windows Python 会被解析错**（Phase 4 实测）。
+    `/d/HermesWorkplace/cache/verify_ui_phase4.py` 传给 `python.exe` 后，
+    Python 把开头的 `/d` 当成**相对路径**，解析成 `D:\d\HermesWorkplace\...` → `[Errno 2] No such file or directory`。
+    注意：同一路径在 shell 里（cd、重定向）是好的，**只有作为参数交给原生 Windows 程序时才出问题**。
+    修法：给 Python 的路径一律写成 `D:/HermesWorkplace/...`。
+19. **验收脚本里「某功能尚未实现」的断言会变成定时炸弹**（Phase 4 交付时发现）。
+    `verify_ui_phase3.py` 有一条 `check("episodes tab still marked unimplemented")` ——
+    在 Phase 3 时它是正确的绿，Phase 4 交付后它**要么开始误报 FAIL，要么在侥幸通过时
+    给出一个与产品相矛盾的结论**。这是「过期断言」：断言的是当下的进度，而不是产品的行为。
+    发现后已改为指向 Phase 5 的「素材」tab。
+    教训：验收脚本只能断言**行为不变量**（这页渲染出这些内容 / 没有 console error），
+    不要断言「这块还没做」；每交付一个阶段，都要回头 grep 一次 `尚未实现` 之类的进度断言。
+20. **lint 不只是格式问题，它会捞到真实 bug**（Phase 4 实测两例）。
+    - `F811`：`app/api/v1/episodes.py` 同时 `from pydantic import ValidationError` 与
+      `from app.core.exceptions import ValidationError`，后者**遮蔽**前者，
+      于是 `except ValidationError` 抓的是自己的异常类而不是 Pydantic 的 ——
+      「JSON 列里存量数据校验失败」这条降级路径实际是失效的。改用 `PydanticValidationError` 别名。
+    - `B023`：一致性检查器里的内层 `def add(...)` 闭包**捕获循环变量**而非绑定值。
+      一旦有任何延迟调用，问题就会被记到错误的镜头上。改为默认参数显式绑定。
+    教训：`ruff check` 是**正确性**工具，不只是风格工具；出现新告警应先判断是不是真 bug，
+    而不是无脑加 `noqa`。
+
+21. **「假阳性机器」比没有检查更糟**（Phase 4 交付后实测，本轮最值得记住的一条）。
+    一致性检查器原本有两条规则：场景设定的 `description` / `lighting` 若**没有逐字**出现
+    在 `image_prompt` 里就报一条。离线（mock / 启发式 provider）它们表现得完美 ——
+    因为 mock 的输出就是我们自己拼的字符串，必然包含原文。
+    接真实模型后，一份 **54 镜头**的分镜上这两条分别报了 **52** 和 **41** 次，
+    而抽查提示词发现：
+
+    ```
+    Bible  : 礼堂顶部大灯明亮，舞台聚光灯打在主席台上，座位区光线均匀偏暖
+    prompt : ……顶部大灯明亮，座位区暖光均匀……      ← 意思完整，措辞不同
+    ```
+
+    也就是说这两条规则测的是「模型有没有照抄我的措辞」，而不是「提示词有没有写环境和光」。
+    更荒谬的是 S2 镜 3 是一段**闪回出租屋**的镜头，它本来就不该出现礼堂的光照 ——
+    严格匹配在这个场景上连「正确答案」是什么都判错了。
+    93 条噪音的后果是：整个面板没人看，真正的问题也埋在噪音里。
+    修法：换成一条**弱证据**规则 `SCENE_CONTEXT_MISSING`
+    （提示词里一个环境/光线词都没有，才报，INFO 级），
+    并为它写了**双向**测试：改写的提示词**不报**、只有人物没有环境的提示词**必须报**、
+    衣着词（`白色`/`衬衫`）**不算**环境。第三条尤其重要 ——
+    否则词汇表会慢慢放宽到永不触发，那是另一种失效。
+    教训：**先问「这条规则在真实输入上误报率多少」，再问「它能不能发现坏情况」。**
+    一个只在 mock 上表现良好的检查器是假绿的另一个变种（见 §13.12）。
+22. **验收脚本会「触发」被验收的功能，从而破坏被测状态**（Phase 4 实测）。
+    UI 验收里写了 `page.locator("button", has_text="分镜").first.click()` 想点「分镜」面板 tab，
+    但 `has_text` 是**子串**匹配，页头的「生成分镜」按钮也命中，且 `.first` 取到的是它 ——
+    于是脚本在真实浏览器里**发起了一次 104 秒的真实分镜生成**，
+    把该剧集留在 `RUNNING` 状态，之后所有断言都在一个正在被写入的对象上跑。
+    症状很有迷惑性：读数据库看到 `storyboard_status=RUNNING` 又已写入 `storyboard_generated_at`，
+    看起来像「状态更新有 bug」；实际是我自己去点了那个按钮。
+    修法：面板 tab 用 `get_by_role("button", name="分镜", exact=True)`，**别用 `has_text` 子串**；
+    断言前先确认状态已收敛（`storyboard_status == SUCCEEDED`），
+    不要把「进行中」的对象当成被测对象。
+    顺带暴露的第三件事：tab 按钮里嵌着镜头数，可访问名是 `剧本8` 而不是 `剧本`，
+    `exact=True` 匹配不到。修法不是改测试迁就它，而是把计数标成装饰性
+    （`aria-hidden="true"`）—— 读屏本来也不该念出「剧本8」。
+    **能被无障碍工具正确识别的名字，通常也是能被测试稳定定位的名字。**
+    教训：验收脚本对被测系统是**有副作用的客户端**。
+    点之前先问「这个 locator 还可能命中什么」，并让脚本在断言前把状态钉死。
+23. **等待「错误的就绪信号」等于没有等待**（Phase 4 实测，两个假 FAIL）。
+    脚本用 `wait_for_selector("text=分集规划")` 作为剧集 tab 就绪的标志，
+    但「分集规划」这块面板是在 `listEpisodes` 返回**之前**就渲染的
+    （`loading` 时列表被 `LoadingState` 替换，面板却已经在页面上）。
+    于是后续断言在一个还没渲染列表的页面上跑，`EP01` 与「场戏」两条报 FAIL，
+    而 3 秒后手工复测 `get_by_text("EP01")` 有 2 个命中。
+    修法：等待**只有目标数据到位才可能存在**的文本（等 `EP01` 本身、等「场戏」那一行），
+    而不是等同一屏里那个先渲染的容器标签。
+    教训：出现「时快时慢的假 FAIL」时，先怀疑就绪信号选错了，不要先去改断言。
 
 ---
 
@@ -351,7 +454,7 @@ docker compose
 | 1 | 工程基础（前端/后端骨架、PG、Redis、Compose、迁移、/health、统一响应、request_id、异常处理、测试） | ✅ 已完成 |
 | 2 | 项目系统（认证、Project CRUD、Story 输入、列表/详情/创建页） | ✅ 已完成 |
 | 3 | Story Agent（LangGraph、Story Bible、Character/Location、Mock LLM Provider） | ✅ 已完成 |
-| 4 | Episode Agent（Planner / Script / Storyboard / Consistency） | ⏳ 待开发 |
+| 4 | Episode Agent（Planner / Script / Storyboard / Consistency） | ✅ 已完成 |
 | 5 | 图片（ImageProvider、参考图、Prompt Builder、异步任务） | ⏳ 待开发 |
 | 6 | 视频（VideoProvider、轮询、重试、Asset 存储） | ⏳ 待开发 |
 | 7 | TTS（音色绑定、台词音频） | ⏳ 待开发 |
@@ -599,3 +702,183 @@ prompt 是 `prompts/<domain>/<name>_v<N>.md` 文件，不写在 Python 里。
 2. 它曾经**从未落库**（见 §13.14 的 JSON 原地修改坑），
    所以 `GET /bible` 一直返回 `meta: null` 而无人察觉。
    现在有换 Session 读取的回归测试守着。
+
+---
+
+## 18. Phase 4 设计（Episode Agent）
+
+### 18.1 工作流（PRD §12）
+
+PRD §12 把整条链路画成一条直线，Phase 4 补上后半段：
+
+```
+story_parser → character_extractor → location_extractor     (Phase 3)
+  → episode_planner                                          (新)
+  → script_generator                                         (新)
+  → storyboard_generator                                     (新)
+  → consistency_checker                                      (新)
+```
+
+`app/agents/__init__.py` 导出两个执行序：
+`EPISODE_EXECUTION_ORDER`（本阶段四节点）与 `FULL_EXECUTION_ORDER`（七节点全链），
+并有 mermaid 断言逐条锁定**边**（不只是节点名）—— 图被改错时测试会立刻报错。
+
+为此提供了四个**单节点图**（`build_planner_graph` / `build_script_graph` /
+`build_storyboard_graph` / `build_episode_graph`），让「只重跑某一集」不必从故事解析开始。
+
+### 18.2 数据模型（迁移 `0004_episode_agent`）
+
+- `shots`（新表）：PRD §17 的字段 + `sequence` / `characters_json` / 三个 `*_asset_id` 占位。
+- `episodes` 增加 `script_status` / `storyboard_status` / `generation_error` /
+  `script_generated_at` / `storyboard_generated_at`。
+
+两个刻意的设计决定：
+
+1. **`shot_number` 与 `sequence` 并存。** PRD §11 规定镜头在**场景内**从 1 编号，
+   所以唯一约束是 `(episode_id, scene_id, shot_number)`；而渲染顺序、以及 Phase 5-7
+   把生成媒体挂到具体镜头，需要**跨场景的绝对顺序**，这就是 `sequence`。
+   两者都保留，避免以后为了排序去解析 `scene_id` 的字符串。
+2. **`*_asset_id` 现在就建。** 它们是 Phase 5-7 的挂载点；`shots` 行存在的意义正是
+   让之后生成的图片/视频/音频有一个稳定的归属。先建列比之后再迁移便宜。
+
+枚举一律用 String（沿用 Phase 1 约定），vocabulary 由 Pydantic 把关。
+
+### 18.3 结构化输出的两条硬规则
+
+Phase 3 的 `generate_structured()` 只做 schema 校验；Phase 4 加了 `post_validate`
+回调，用来表达**schema 表达不了**的约束：
+
+- `script_generator`：每个 `character_id` / `location_id` 必须**存在于数据库**。
+  Pydantic 只能校验「是非空字符串」，无法知道 uuid 是否真的存在。
+  节点把 roster 的 id 集合传进 `post_validate`，不通过就**重试**（上限见 §18.4）。
+- `storyboard_generator`：分镜必须**覆盖剧本的每一个场景**，不多不少。
+  少一个场景 = 那一场戏的镜头全部凭空消失，且不会报错。
+
+实测最常见的失败是模型直接写**角色名**而不是 id —— 只检查「非空」的校验会完全放行。
+
+### 18.4 重试与失败语义
+
+- 重试有上限；用尽后抛 `GenerationFailedError`，**绝不把带悬空 id 的数据落库**。
+- 失败**不销毁上一次的成功产出**：`script_status=FAILED` 时 `script_json` 仍在，
+  `storyboard_status=SUCCEEDED` 的记录照样能看。
+  这是刻意的 —— 重生成失败不应该让用户失去已有的东西。
+- **重新生成剧本会作废分镜**（shots 全部删除、状态置回 `NOT_GENERATED`）。
+  理由：镜头挂在 `scene_id` 上，剧本一改，旧镜头就指向了不存在的场次；
+  而 Phase 5-7 会按 shot 行挂媒体，留下旧行会让资产被**静默错误关联**。
+
+### 18.5 一致性检查器（PRD §19）
+
+PRD §19 列的输入是 Story Bible + Character Bible + Scene Bible + Style Bible + 参考图。
+V1 只做**能从数据本身判定**的部分，其余明确不装作能判：
+
+| 检查 | 级别 | 判定方式 |
+| --- | --- | --- |
+| `UNKNOWN_CHARACTER` | ERROR | 镜头里的角色名不在 Character Bible |
+| `SCENE_NOT_IN_SCRIPT` | ERROR | 镜头所属场景不在剧本 |
+| `SHOT_DURATION_INVALID` | ERROR | 时长 ≤ 0 |
+| `SCENE_WITHOUT_SHOTS` | WARNING | 场景没有镜头 |
+| `APPEARANCE_NOT_IN_PROMPT` | WARNING | 提示词里找不到该人物的外貌设定片段 |
+| `SCENE_CONTEXT_MISSING` | INFO | 提示词完全没提环境或光线（取代了原先两条误报严重的规则，见 §13.21） |
+| `STYLE_NOT_IN_PROMPT` | WARNING | 提示词里没有全局画风 |
+| `DIALOGUE_NOT_IN_SCRIPT` | WARNING | 镜头台词与剧本不一致 |
+| `EPISODE_DURATION_MISMATCH` | WARNING | 总时长偏差 > 35% |
+| `SHOT_TOO_LONG` | WARNING | 单镜 > 12s |
+| `VIDEO_PROMPT_MISSING` | INFO | 可选字段缺失 |
+
+三条原则：
+
+1. **判定「出现 / 不出现」用 ERROR/WARNING，判定「像不像」只能用 WARNING。**
+   子串匹配是证据不是理解，不能因为提示词里少了一个词就让整份分镜「不可用」。
+2. **干净输入必须零告警。** 一个「什么都报」的检查器能通过所有「它发现了 X」的测试
+   却毫无用处，所以测试里最重要的一条是「干净分镜报告为空」（见 §18.7）。
+3. **对自由散文只能用「弱证据」。** 这一条是交付后实测补上的，见 §13.21：
+   `description` / `lighting` 是自由散文，模型**必然改写措辞**，
+   于是「要求逐字复现某个分句」的检查在真实输出上 54 个镜头误报 93 次。
+   凡是**短字段**（`hair` / `clothing` / `name` / `style`）逐字匹配是可信证据；
+   凡是**长散文**，只能问「有没有提到环境或光」这种能由文本判定、且模型无法靠改写绕开的弱命题。
+
+检查器**不调用模型**，因此 `GET /consistency` 可以随时免费复检。
+该端点同时审剧本与分镜：只审分镜会让它对同一份数据给出与生成时**不一致**的结论
+（剧本级的 `SPEAKER_NOT_IN_SCENE` 等会凭空消失）。
+
+### 18.6 API（10 个端点）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/projects/{id}/episodes` | 分集列表（含 shot_count 等派生字段） |
+| POST | `/projects/{id}/episodes` | 手动新增一集 |
+| POST | `/projects/{id}/episodes/plan` | 运行 episode_planner（`replace` 需显式传） |
+| DELETE | `/projects/{id}/episodes` | 清空分集计划 |
+| GET/PATCH/DELETE | `/episodes/{id}` | 剧集详情 / 修改 / 删除 |
+| GET | `/episodes/{id}/script` | 剧本（含 id→name 查表） |
+| POST | `/episodes/{id}/script/generate` | 生成剧本 |
+| PATCH | `/episodes/{id}/script` | 修改剧本（`scenes` 整体替换） |
+| GET | `/episodes/{id}/storyboard` | 分镜文档 + 扁平镜头表 + 一致性报告 |
+| POST | `/episodes/{id}/storyboard/generate` | 生成分镜并跑一致性检查 |
+| PATCH | `/episodes/{id}/storyboard` | 修改分镜文档 |
+| GET | `/episodes/{id}/shots` | 镜头列表 |
+| PATCH | `/shots/{id}` | 修改单个镜头（枚举**严格**校验） |
+| GET | `/episodes/{id}/consistency` | 复检（不调模型） |
+
+写端点沿用本仓约定：顶层聚合（注册、建项目）返回 201，
+**嵌套集合**（`POST /projects/{id}/episodes`）返回 200 —— 与 Phase 2/3 的
+`POST /projects/{id}/characters` 一致。
+
+### 18.7 测试策略
+
+`442 passed`（Phase 3 时为 316）。本轮新增的重点：
+
+- `test_episode_consistency.py::TestConsistencyShapeParity` —— 同一规则对
+  **Pydantic 对象**与**dict** 两种输入断言，且结果必须完全一致。
+  这一组直接对应 §13.16 的真实 500，并已**证伪过**：把修复回退后测试确实复现原始 `AttributeError`。
+- **「干净输入零告警」** —— 上面所有「它发现了 X」的测试都无法证伪一个「什么都报」的实现，
+  这一条才是它们的锚。
+- **弱证据检查要双向测**（`TestSceneContextEvidence`）：改写的提示词**不报**、
+  只有人物没有环境的提示词**必须报**、衣着词不算环境。
+  并已用变异验证：把词汇表清空成 `()` 后，第一条立刻变成误报 ——
+  证明基线那个「通过」是词汇表真的匹配上了，而不是断言恒真。
+- **重试用假 provider 制造真实失败**：`ScriptedEpisodeProvider` 第一次返回**编造的 id**，
+  第二次返回正确结果；断言不仅看最终产物，还断言**调用次数为 2**。
+  若节点静默接受第一次输出，只看产物的断言仍会侥幸通过，所以次数必须一起断言。
+- API 层：守卫（未解析/重复规划/先分镜后剧本全部 409）、id 绑定、越权隔离（404 而非 403）、
+  重新生成后旧 shots 是否被清掉。
+
+### 18.8 前端（剧集 tab）
+
+`components/episode-agent.tsx`：分集列表 + 剧本视图 + 分镜卡片 + 一致性面板。
+
+- **长时间生成必须显示已用秒数**。真实模型：规划约 6s、剧本约 25s、分镜约 60s。
+  没有计时的话，60 秒的等待与「请求挂了」无法区分，用户会重复点击、产生重复工作。
+- **id 与名字分别处理**：剧本台词带的是 `character_id`（uuid），
+  分镜镜头带的是**角色名**。两者都通过页面下传的 Bible 解析成名字，界面不出现裸 uuid。
+- **场景名要靠剧本反查**：`shots` 行只有 `scene_id`（`S3` 这种剧本标签），
+  没有 `location_id`，所以分镜里的场景名必须经剧本映射得到。
+- **出场角色不可在此编辑**。手输角色名会造出 Character Bible 里不存在的角色，
+  正好破坏 §19 的一致性 —— 保持只读。
+- 项目概览的流水线进度对「剧本生成 / 分镜生成」显示**「在剧集查看 →」**而不是「待开发」：
+  项目详情接口只带一个集数计数，无法知道剧本状态，**不知道就不要给结论**。
+- **刷新不能卸载子树。** 同一个症状（「已保存」提示出现即消失）有两个成因，
+  都是「刷新时把组件换掉了」：
+  1. 详情面板写成 `key={`${id}-${revision}`}`，用递增 `revision` 强制重新拉取 ——
+     但改变 `key` 会**卸载并重建**整个子树。改为把 `revision` 作为 **prop**，
+     由面板内的 `useEffect` 依赖它重新拉取；
+  2. 列表与详情在 `loading` 时 `return <LoadingState/>`，而**任何一次**写入都会触发
+     重新拉取并把 `loading` 置回 true —— 于是点一次「保存镜头」就把整个面板换成骨架屏，
+     子组件连同刚设置的 `已保存` 状态一起被销毁，其他卡片里改到一半的内容同样被清空。
+     改为只在**首次**加载显示骨架屏（`hasLoaded` 标志），后续刷新只显示「正在同步…」。
+  代价是要显式处理「服务端值变了」：剧本梗概的 textarea 用 ref 记住
+  上次采纳的服务端值，只有服务端真的变了才覆盖用户正在编辑的内容。
+  教训：**`key` 是身份，不是刷新按钮；骨架屏是首次加载的状态，不是刷新状态。**
+  这两个 bug 都只在浏览器里点一次按钮才暴露 —— 单元测试与 API 验收全绿也照样存在。
+
+### 18.9 未做 / 已知限制
+
+- 生成仍是**同步**的（规划 6s / 剧本 25s / 分镜 60s 都挂在请求上）。
+  异步化（Celery）属 Phase 5，见 §17.8。
+- `consistency_checker` 的「像不像」类判定是**子串匹配**，不是视觉理解；
+  人物外貌只要写了关键片段即通过。真正的视觉一致性要靠 Phase 5 的参考图 + 审核环节。
+- 逐镜头的**角色改为按名字绑定**（与剧本按 id 绑定不同）。
+  这是 PRD §11 给的字段形态，代价是重命名人物后旧分镜会指向旧名字 —— 
+  一致性检查器会把这种情况报成 `UNKNOWN_CHARACTER`，属于可接受的可发现失败。
+- 未实现分镜的**局部重生成**（只重画某几个镜头）。
+

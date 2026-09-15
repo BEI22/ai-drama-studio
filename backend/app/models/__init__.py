@@ -9,22 +9,27 @@ from app.models.character import Character
 from app.models.enums import (
     AnalysisStatus,
     AssetType,
+    CameraMovement,
     CharacterRole,
     EpisodeStatus,
     MemoryType,
     ProjectStatus,
+    ShotSize,
+    ShotStatus,
     TaskStatus,
     TaskType,
 )
 from app.models.episode import Episode
 from app.models.location import Location
 from app.models.project import Project
+from app.models.shot import Shot
 from app.models.user import User
 
 __all__ = [
     "AnalysisStatus",
     "AssetType",
     "Base",
+    "CameraMovement",
     "Character",
     "CharacterRole",
     "Episode",
@@ -33,6 +38,9 @@ __all__ = [
     "MemoryType",
     "Project",
     "ProjectStatus",
+    "Shot",
+    "ShotSize",
+    "ShotStatus",
     "TaskStatus",
     "TaskType",
     "TimestampMixin",

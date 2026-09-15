@@ -36,9 +36,17 @@ QA_PY = Path(
     os.environ.get("AI_STUDIO_QA_PYTHON", "D:/HermesWorkplace/cache/qa-venv/Scripts/python.exe")
 )
 BROWSERS = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "D:/HermesWorkplace/cache/ms-playwright")
-UI_VERIFIER = Path(
-    os.environ.get("AI_STUDIO_UI_VERIFIER", "D:/HermesWorkplace/cache/verify_ui_phase3.py")
-)
+# One entry per phase: they seed their own data over HTTP, then drive real
+# Chrome. Kept as a list so adding a phase cannot silently leave its UI
+# unverified -- `verify:ui` runs all of them.
+UI_VERIFIERS = [
+    Path(os.environ.get("AI_STUDIO_UI_VERIFIER", "D:/HermesWorkplace/cache/verify_ui_phase3.py")),
+    Path(
+        os.environ.get(
+            "AI_STUDIO_UI_VERIFIER_PHASE4", "D:/HermesWorkplace/cache/verify_ui_phase4.py"
+        )
+    ),
+]
 
 
 def run(cmd: list, cwd: Path = ROOT, env: dict | None = None) -> int:
@@ -95,30 +103,40 @@ def typecheck() -> int:
 
 
 def build() -> int:
-    """Production frontend build, then the container images."""
     """Production build of the frontend, then the container images."""
     return npm("run", "build") or run(["docker", "compose", "build"])
 
 
 def verify() -> int:
-    """All three acceptance suites against the running stack."""
-    """All three acceptance suites against the running stack (real model calls)."""
+    """Every acceptance suite against the running stack (real model calls)."""
     rc = run([bash(), "scripts/verify_phase1.sh"])
-    for script in ("scripts/verify_phase2.py", "scripts/verify_phase3.py"):
+    for script in PHASE_SCRIPTS:
         rc = run([sys.executable, script]) or rc
     return rc
 
 
+def verify_phase4() -> int:
+    """Phase 4 acceptance only: Episode Agent, script, storyboard, shots."""
+    return run([sys.executable, "scripts/verify_phase4.py"])
+
+
 def verify_ui() -> int:
-    """Render the UI in real Chrome via Playwright."""
-    """Render the UI in real Chrome via Playwright (machine-local QA venv)."""
-    if not (QA_PY.exists() and UI_VERIFIER.exists()):
-        sys.exit(f"UI verifier unavailable ({QA_PY} / {UI_VERIFIER}) -- set AI_STUDIO_QA_PYTHON")
-    return run([QA_PY, UI_VERIFIER], env={"PLAYWRIGHT_BROWSERS_PATH": BROWSERS})
+    """Render every delivered phase's UI in real Chrome via Playwright."""
+    if not QA_PY.exists():
+        sys.exit(f"QA venv missing at {QA_PY} -- set AI_STUDIO_QA_PYTHON")
+    missing = [str(v) for v in UI_VERIFIERS if not v.exists()]
+    if missing:
+        sys.exit(f"UI verifier(s) missing: {', '.join(missing)}")
+
+    rc = 0
+    for verifier in UI_VERIFIERS:
+        rc = (
+            run([QA_PY, verifier], env={"PLAYWRIGHT_BROWSERS_PATH": BROWSERS}, cwd=Path.cwd()) or rc
+        )
+    return rc
 
 
 def seed() -> int:
-    """Create the demo account and a fully analysed project."""
     """Create the demo account and a fully analysed project."""
     return run([sys.executable, "scripts/seed_demo.py"])
 
@@ -133,6 +151,15 @@ def down() -> int:
     return run(["docker", "compose", "down"])
 
 
+# Phase acceptance scripts, in order. Phase 1 is a shell script because it only
+# curls the stack; the rest drive the API with explicit UTF-8 (git-bash mangles
+# inline Chinese).
+PHASE_SCRIPTS = (
+    "scripts/verify_phase2.py",
+    "scripts/verify_phase3.py",
+    "scripts/verify_phase4.py",
+)
+
 TASKS = {
     "test": test,
     "lint": lint,
@@ -141,6 +168,7 @@ TASKS = {
     "build": build,
     "verify": verify,
     "verify:ui": verify_ui,
+    "verify:phase4": verify_phase4,
     "seed": seed,
     "up": up,
     "down": down,

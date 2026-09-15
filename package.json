@@ -12,6 +12,7 @@
     "build": "python scripts/tasks.py build",
     "verify": "python scripts/tasks.py verify",
     "verify:ui": "python scripts/tasks.py verify:ui",
+    "verify:phase4": "python scripts/tasks.py verify:phase4",
     "seed": "python scripts/tasks.py seed",
     "up": "python scripts/tasks.py up",
     "down": "python scripts/tasks.py down",
