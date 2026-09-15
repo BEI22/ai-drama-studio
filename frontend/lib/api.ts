@@ -11,6 +11,32 @@
  */
 
 import { clearSession, getToken, notifyUnauthorized } from "@/lib/session";
+import type {
+  AnalysisStatus,
+  AnalyzeStatus,
+  Character,
+  CharacterWriteInput,
+  DeletedResult,
+  LocationWriteInput,
+  StoryBibleResponse,
+  StoryLocation,
+} from "@/types/api";
+
+// Re-exported so components have a single import site for domain types.
+export type {
+  AnalysisStatus,
+  AnalyzeStatus,
+  BibleMeta,
+  Character,
+  CharacterRole,
+  CharacterWriteInput,
+  DeletedResult,
+  LocationWriteInput,
+  StoryBibleContent,
+  StoryBibleResponse,
+  StoryLocation,
+  UsageRecord,
+} from "@/types/api";
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -193,6 +219,10 @@ export interface Project {
   story_source: StorySource | null;
   has_story: boolean;
   episode_count: number;
+  // Phase 3: surfaced on the list cards so the dashboard shows Bible progress.
+  analysis_status: AnalysisStatus;
+  character_count: number;
+  location_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -211,6 +241,8 @@ export interface EpisodeSummary {
 export interface ProjectDetail extends Project {
   story_text: string | null;
   story_bible_json: Record<string, unknown> | null;
+  analysis_error: string | null;
+  analyzed_at: string | null;
   episodes: EpisodeSummary[];
 }
 
@@ -320,6 +352,48 @@ export const api = {
 
   clearStory: (id: string) =>
     request<{ id: string; has_story: boolean }>(`/projects/${id}/story`, { method: "DELETE" }),
+
+  // --------------------------------------------------------------- phase 3
+  // Story Agent + Story Bible (PRD sections 6-9, 22).
+
+  /** Run the Story Agent. Slow (real LLM calls), so callers should show progress. */
+  analyzeProject: (
+    id: string,
+    input: { story_text?: string; replace?: boolean } = {},
+  ) => {
+    const query = input.replace ? "?replace=true" : "";
+    return request<StoryBibleResponse>(`/projects/${id}/analyze${query}`, {
+      method: "POST",
+      body: input.story_text ? { story_text: input.story_text } : undefined,
+    });
+  },
+
+  analyzeStatus: (id: string) => request<AnalyzeStatus>(`/projects/${id}/analyze/status`),
+
+  getBible: (id: string) => request<StoryBibleResponse>(`/projects/${id}/bible`),
+
+  listCharacters: (id: string) =>
+    request<Character[]>(`/projects/${id}/characters`),
+
+  createCharacter: (id: string, input: CharacterWriteInput) =>
+    request<Character>(`/projects/${id}/characters`, { method: "POST", body: input }),
+
+  updateCharacter: (characterId: string, input: CharacterWriteInput) =>
+    request<Character>(`/characters/${characterId}`, { method: "PATCH", body: input }),
+
+  deleteCharacter: (characterId: string) =>
+    request<DeletedResult>(`/characters/${characterId}`, { method: "DELETE" }),
+
+  listLocations: (id: string) => request<StoryLocation[]>(`/projects/${id}/locations`),
+
+  createLocation: (id: string, input: LocationWriteInput) =>
+    request<StoryLocation>(`/projects/${id}/locations`, { method: "POST", body: input }),
+
+  updateLocation: (locationId: string, input: LocationWriteInput) =>
+    request<StoryLocation>(`/locations/${locationId}`, { method: "PATCH", body: input }),
+
+  deleteLocation: (locationId: string) =>
+    request<DeletedResult>(`/locations/${locationId}`, { method: "DELETE" }),
 };
 
 export type { RequestOptions };

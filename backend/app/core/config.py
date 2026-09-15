@@ -58,11 +58,24 @@ class Settings(BaseSettings):
     storage_local_dir: str = str(REPO_DIR / "storage")
     storage_public_base_url: str = "http://localhost:8000/static"
 
-    # --- providers (Phase 3+; no real provider is wired up in Phase 1) ---
+    # --- providers (Phase 3 wires up LLM; media providers stay mock) ------
     llm_provider: str = "mock"
     image_provider: str = "mock"
     video_provider: str = "mock"
     tts_provider: str = "mock"
+
+    # OpenAI-compatible LLM endpoint (used when llm_provider != "mock").
+    llm_api_key: str = ""
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4o-mini"
+    llm_timeout_seconds: float = 120.0
+    llm_max_retries: int = 3
+    llm_temperature: float = 0.4
+
+    # Mock provider behaviour. ``mock_llm_fail_times`` makes the first N calls
+    # fail so the retry path can be exercised in tests and demos.
+    mock_llm_fail_times: int = 0
+    mock_llm_latency_ms: int = 0
 
     # --- http ------------------------------------------------------------
     # NoDecode: pydantic-settings would otherwise try to JSON-decode this list

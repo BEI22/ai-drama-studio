@@ -6,9 +6,18 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { ErrorState, LoadingState, SignInRequired } from "@/components/states";
+import {
+  AnalysisBadge,
+  AnalyzePanel,
+  CharactersTab,
+  LocationsTab,
+  StoryBibleView,
+  useBible,
+} from "@/components/story-agent";
 import { api, ApiError, type ProjectDetail, type StorySource } from "@/lib/api";
+import type { StoryBibleResponse } from "@/types/api";
 
-/** PRD section 5.3 left navigation. Only Phase 2 tabs are implemented. */
+/** PRD section 5.3 left navigation. Tabs above the current phase are marked. */
 const TABS = [
   { key: "overview", label: "项目概览", phase: 2 },
   { key: "story", label: "故事设定", phase: 2 },
@@ -19,6 +28,9 @@ const TABS = [
   { key: "tasks", label: "生成任务", phase: 5 },
   { key: "settings", label: "设置", phase: 2 },
 ] as const;
+
+/** Highest phase delivered so far -- drives the "not implemented" placeholders. */
+const DELIVERED_PHASE = 3;
 
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -67,6 +79,14 @@ export default function ProjectDetailPage() {
     void load();
   }, [initializing, user, load]);
 
+  // The Bible feeds the overview banner, the characters tab and the locations
+  // tab, so it is loaded once here. This hook MUST stay above the early returns
+  // below -- calling it after a conditional return would change the hook order
+  // between renders and crash React. It is gated on `project` so no request is
+  // made before the project itself has loaded.
+  const { bible, loading: bibleLoading, error: bibleError, reload: reloadBible, setBible } =
+    useBible(projectId, Boolean(project));
+
   if (initializing || !user) return <SignInRequired what="项目详情" />;
 
   if (loading) {
@@ -102,7 +122,12 @@ export default function ProjectDetailPage() {
   if (!project) return null;
 
   const activeTab = TABS.find((item) => item.key === tab) ?? TABS[0];
-  const notYet = activeTab.phase > 2;
+  const notYet = activeTab.phase > DELIVERED_PHASE;
+
+  function handleAnalyzed(result: StoryBibleResponse) {
+    setBible(result);
+    void load();
+  }
 
   return (
     <div className="space-y-6">
@@ -124,7 +149,7 @@ export default function ProjectDetailPage() {
           <nav className="panel flex flex-col gap-0.5 p-2" aria-label="项目导航">
             {TABS.map((item) => {
               const active = item.key === tab;
-              const pending = item.phase > 2;
+              const pending = item.phase > DELIVERED_PHASE;
               return (
                 <button
                   key={item.key}
@@ -152,14 +177,57 @@ export default function ProjectDetailPage() {
             <div className="panel flex flex-col items-center gap-2 px-6 py-14 text-center">
               <p className="text-sm text-slate-300">{activeTab.label} 尚未实现</p>
               <p className="max-w-md text-xs leading-relaxed text-slate-500">
-                该模块计划在 Phase {activeTab.phase} 交付。Phase 2 只覆盖项目 CRUD、故事文本保存
-                与项目浏览。
+                该模块计划在 Phase {activeTab.phase} 交付。目前已完成到 Phase {DELIVERED_PHASE}
+                ：项目 CRUD、故事文本、以及 Story Agent 解析出的 Story Bible /
+                人物 / 场景。
               </p>
             </div>
           ) : tab === "overview" ? (
-            <OverviewTab project={project} />
+            <OverviewTab
+              project={project}
+              bible={bible}
+              bibleLoading={bibleLoading}
+              bibleError={bibleError}
+              onRetryBible={reloadBible}
+              onOpenTab={setTab}
+            />
           ) : tab === "story" ? (
-            <StoryTab project={project} onSaved={setProject} />
+            <div className="space-y-4">
+              <StoryTab project={project} onSaved={setProject} />
+              <AnalyzePanel
+                projectId={project.id}
+                projectName={project.name}
+                analysisStatus={project.analysis_status}
+                analysisError={project.analysis_error}
+                hasStory={project.has_story}
+                characterCount={project.character_count}
+                locationCount={project.location_count}
+                onDone={handleAnalyzed}
+                onOpenTab={setTab}
+              />
+              {bibleLoading ? <LoadingState label="正在加载 Story Bible…" /> : null}
+              {bibleError ? (
+                <ErrorState error={bibleError} onRetry={reloadBible} title="加载 Story Bible 失败" />
+              ) : null}
+              {bible ? <StoryBibleView bible={bible} /> : null}
+            </div>
+          ) : tab === "characters" ? (
+            <CharactersTab
+              projectId={project.id}
+              analysisStatus={project.analysis_status}
+              characters={bible?.characters ?? []}
+              onCharactersChanged={(next) => {
+                if (bible) setBible({ ...bible, characters: next });
+              }}
+            />
+          ) : tab === "locations" ? (
+            <LocationsTab
+              analysisStatus={project.analysis_status}
+              locations={bible?.locations ?? []}
+              onLocationsChanged={(next) => {
+                if (bible) setBible({ ...bible, locations: next });
+              }}
+            />
           ) : (
             <SettingsTab project={project} onChanged={load} />
           )}
@@ -170,7 +238,32 @@ export default function ProjectDetailPage() {
 }
 
 // ------------------------------------------------------------------- overview
-function OverviewTab({ project }: { project: ProjectDetail }) {
+function OverviewTab({
+  project,
+  bible,
+  bibleLoading,
+  bibleError,
+  onRetryBible,
+  onOpenTab,
+}: {
+  project: ProjectDetail;
+  bible: StoryBibleResponse | null;
+  bibleLoading: boolean;
+  bibleError: ApiError | null;
+  onRetryBible: () => void;
+  onOpenTab: (tab: "characters" | "locations") => void;
+}) {
+  const steps = [
+    { label: "项目创建", done: true },
+    { label: "故事文本录入", done: project.has_story },
+    { label: "故事解析（Story Bible）", done: project.analysis_status === "SUCCEEDED" },
+    { label: "剧本生成", done: project.episodes.length > 0 },
+    { label: "分镜生成", done: false },
+    { label: "图片生成", done: false },
+    { label: "视频生成", done: false },
+    { label: "配音 / 字幕 / 合成", done: false },
+  ];
+
   return (
     <div className="space-y-4">
       <div className="panel p-5">
@@ -185,27 +278,70 @@ function OverviewTab({ project }: { project: ProjectDetail }) {
           />
           <Field label="已生成集数" value={String(project.episode_count)} />
           <Field label="故事文本" value={project.has_story ? "已保存" : "未填写"} />
+          <Field label="人物数" value={String(project.character_count)} />
+          <Field label="场景数" value={String(project.location_count)} />
           <Field label="创建时间" value={formatDateTime(project.created_at)} />
           <Field label="更新时间" value={formatDateTime(project.updated_at)} />
         </dl>
       </div>
 
       <div className="panel p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="label-caps">故事解析状态</h2>
+          <AnalysisBadge status={project.analysis_status} />
+        </div>
+
+        {project.analysis_error ? (
+          <p className="mt-3 break-all rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 font-mono text-[11px] text-rose-200/80">
+            {project.analysis_error}
+          </p>
+        ) : null}
+
+        {project.analysis_status === "SUCCEEDED" ? (
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-slate-400">
+              解析完成于 {formatDateTime(project.analyzed_at ?? "")}，共提取
+              <span className="text-slate-200"> {project.character_count} </span>个人物、
+              <span className="text-slate-200"> {project.location_count} </span>个场景。
+            </p>
+            {bible?.story_bible?.logline ? (
+              <p className="rounded-lg border border-ink-800 bg-ink-950/40 p-3 text-xs leading-relaxed text-slate-300">
+                {bible.story_bible.logline}
+              </p>
+            ) : null}
+            {bibleLoading ? <LoadingState label="正在加载 Story Bible…" /> : null}
+            {bibleError ? (
+              <ErrorState error={bibleError} onRetry={onRetryBible} title="加载 Story Bible 失败" />
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => onOpenTab("characters")}
+              >
+                查看人物（{project.character_count}）
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => onOpenTab("locations")}>
+                查看场景（{project.location_count}）
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-xs leading-relaxed text-slate-500">
+            {project.has_story
+              ? "故事文本已就绪。切换到「故事设定」运行 Story Agent，即可生成 Story Bible、人物与场景设定。"
+              : "还没有故事文本。先在「故事设定」里录入内容。"}
+          </p>
+        )}
+      </div>
+
+      <div className="panel p-5">
         <div className="flex items-center justify-between">
           <h2 className="label-caps">流水线进度</h2>
-          <span className="text-[11px] text-slate-500">Phase 2 / 8</span>
+          <span className="text-[11px] text-slate-500">Phase {DELIVERED_PHASE} / 8</span>
         </div>
         <ol className="mt-4 space-y-2 text-xs">
-          {[
-            { label: "项目创建", done: true },
-            { label: "故事文本录入", done: project.has_story },
-            { label: "故事解析（Story Bible）", done: project.story_bible_json !== null },
-            { label: "剧本生成", done: project.episodes.length > 0 },
-            { label: "分镜生成", done: false },
-            { label: "图片生成", done: false },
-            { label: "视频生成", done: false },
-            { label: "配音 / 字幕 / 合成", done: false },
-          ].map((step) => (
+          {steps.map((step) => (
             <li key={step.label} className="flex items-center justify-between gap-4">
               <span className={step.done ? "text-slate-300" : "text-slate-500"}>
                 {step.label}
@@ -383,25 +519,6 @@ function StoryTab({
             {saving ? "保存中…" : "保存故事"}
           </button>
         </div>
-      </div>
-
-      <div className="panel border-ink-700 bg-ink-850/40 p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="label-caps">AI 故事解析</h2>
-          <span className="badge border-ink-600 bg-ink-850 text-slate-500">Phase 3</span>
-        </div>
-        <p className="mt-3 text-xs leading-relaxed text-slate-500">
-          Phase 3 会在这里调用 Story Agent（LangGraph）：
-          <span className="text-slate-400">
-            {" "}
-            Story Parser → Character Extractor → Location Extractor → Story Bible
-          </span>
-          ，输出经 Pydantic Schema 校验的结构化 JSON。当前版本不会发起任何 AI 调用。
-        </p>
-        <button type="button" className="btn-ghost mt-4" disabled title="Phase 3 实现">
-          开始解析
-          <span className="text-[10px] opacity-70">(Phase 3)</span>
-        </button>
       </div>
     </div>
   );

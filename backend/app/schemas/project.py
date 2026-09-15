@@ -8,7 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.enums import EpisodeStatus, ProjectStatus
+from app.models.enums import AnalysisStatus, EpisodeStatus, ProjectStatus
 
 NAME_MAX = 200
 STORY_TEXT_MAX = 200_000
@@ -104,6 +104,11 @@ class ProjectOut(BaseModel):
     story_source: StorySource | None
     has_story: bool
     episode_count: int
+    # Phase 3: Story Agent results, surfaced on the card so the dashboard can
+    # show progress without fetching every project's detail.
+    analysis_status: AnalysisStatus
+    character_count: int
+    location_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -113,6 +118,8 @@ class ProjectDetailOut(ProjectOut):
 
     story_text: str | None
     story_bible_json: dict | None
+    analysis_error: str | None
+    analyzed_at: datetime | None
     episodes: list[EpisodeSummary] = Field(default_factory=list)
 
 

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, MetaData, create_engine, func
+from sqlalchemy import DateTime, MetaData, create_engine, event, func
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -22,6 +22,25 @@ NAMING_CONVENTION: dict[str, str] = {
     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     "pk": "pk_%(table_name)s",
 }
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+    """Turn on FK enforcement for SQLite connections.
+
+    SQLite ships with ``PRAGMA foreign_keys = OFF``, so ``ON DELETE CASCADE`` is
+    silently ignored. That matters here because relationships are declared with
+    ``passive_deletes=True`` -- we let the database do the cascading, which
+    Postgres honours and SQLite does not.
+
+    Without this, the dev/test database would quietly behave differently from
+    production: deleting a project would leave orphaned characters/locations
+    behind, and the cascade path would never be exercised by a test.
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
 
 
 class Base(DeclarativeBase):
@@ -66,7 +85,12 @@ def build_engine(url: str | None = None) -> Engine:
         kwargs["pool_size"] = settings.database_pool_size
         kwargs["max_overflow"] = settings.database_max_overflow
 
-    return create_engine(database_url, **kwargs)
+    engine = create_engine(database_url, **kwargs)
+
+    if database_url.startswith("sqlite"):
+        event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+
+    return engine
 
 
 engine: Engine = build_engine()

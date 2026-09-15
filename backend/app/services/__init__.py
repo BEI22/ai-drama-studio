@@ -4,7 +4,15 @@ Routes stay thin -- all business rules live here so they can be reused by Celery
 workers and tested without HTTP.
 """
 
-from app.services.auth_service import AuthService, get_auth_service
+from app.services.agent_service import AgentService
+from app.services.auth_service import AuthService
+from app.services.bible_service import CharacterService, LocationService
 from app.services.project_service import ProjectService
 
-__all__ = ["AuthService", "ProjectService", "get_auth_service"]
+__all__ = [
+    "AgentService",
+    "AuthService",
+    "CharacterService",
+    "LocationService",
+    "ProjectService",
+]

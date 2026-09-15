@@ -3,7 +3,7 @@
 > 配套文档：[PRD.md](./PRD.md)（产品需求 + 开发执行规范）
 > 本文档只记录**已经实现**的设计与决策，未实现的部分明确标注为「待开发」。
 
-版本：V1.0 Phase 1
+版本：V1.0 Phase 3
 最后更新：2026-09-14
 
 ---
@@ -268,6 +268,23 @@ docker compose
    - 验证：`(Get-Item ...).LinkType` 为 `Junction`，且 `docker images` 中镜像完好
    另外 uv / pip 缓存已通过用户级环境变量 `UV_CACHE_DIR` / `PIP_CACHE_DIR`
    重定向到 `D:\HermesWorkplace\cache\`，npm cache 在 D 盘 `node_cache`。
+9. **SQLite 默认不启用外键 → 级联删除静默失效**（Phase 3 实测）。
+   关系用 `passive_deletes=True` 交给数据库级联，Postgres 会执行、**SQLite 不会**，
+   于是删项目后留下孤儿人物/场景，且测试库行为与生产不一致、级联路径从未被测到。
+   已在 `build_engine` 注册 `PRAGMA foreign_keys=ON` 的 connect 事件修正。
+   教训：SQLite 与 PG 的语义差异会让「测试全绿但生产出错」，级联这类 DB 侧行为必须有测试。
+10. **测试套件不得依赖 `.env`**（Phase 3 实测）。`Settings` 会读仓库根 `.env`，
+    把 `LLM_PROVIDER` 指向真实厂商后，**整套测试会去调真实 API** ——
+    有 key 时挂起在网络上，无 key 时失败。`tests/conftest.py` 现在把 LLM 相关变量
+    钉死为 `mock`，并把 base_url 指向不可路由地址（意外外呼会快速失败而非挂起），
+    另有 `test_suite_is_hermetic` 守卫防止回退。
+11. **健康检查把 401 当健康**（Phase 3 实测）。`status_code < 500` 会让密钥失效的
+    provider 显示为绿色，而每次真实调用都失败 —— 运维最容易被误导的场景。
+    现用显式映射：2xx 健康，401/403 不健康，404/405 视为「路由未实现但主机可达」。
+12. **测试 mock 会掩盖真实模型的字段命名差异**（Phase 3 实测，见 §17.4）。
+    mock provider 的输出来自我们自己的代码，天然符合我们的 schema，
+    因此真实模型用别名 key 导致字段被丢弃的问题只有接真模型才暴露。
+    结论：涉及「外部系统的实际契约」的部分，必须至少跑一次真实调用。
 
 ---
 
@@ -277,7 +294,7 @@ docker compose
 | --- | --- | --- |
 | 1 | 工程基础（前端/后端骨架、PG、Redis、Compose、迁移、/health、统一响应、request_id、异常处理、测试） | ✅ 已完成 |
 | 2 | 项目系统（认证、Project CRUD、Story 输入、列表/详情/创建页） | ✅ 已完成 |
-| 3 | Story Agent（LangGraph、Story Bible、Character/Location、Mock LLM Provider） | ⏳ 待开发 |
+| 3 | Story Agent（LangGraph、Story Bible、Character/Location、Mock LLM Provider） | ✅ 已完成 |
 | 4 | Episode Agent（Planner / Script / Storyboard / Consistency） | ⏳ 待开发 |
 | 5 | 图片（ImageProvider、参考图、Prompt Builder、异步任务） | ⏳ 待开发 |
 | 6 | 视频（VideoProvider、轮询、重试、Asset 存储） | ⏳ 待开发 |
@@ -406,3 +423,95 @@ def get_for_user(self, project_id, user_id) -> Project | None:
   由 Python 显式编码 UTF-8，从根上消除这类假失败。
 
 排查提示：遇到「同一接口 ASCII 通过、中文 400」时先怀疑 shell 编码，不要改后端。
+
+---
+
+## 17. Phase 3 设计（Story Agent）
+
+### 17.1 工作流
+
+```
+START → story_parser → character_extractor → location_extractor → END
+```
+
+严格对应 PRD §12。**媒体生成刻意不在图内**：PRD §12 要求 LLM 流程与长耗时任务分离，
+图片/视频/TTS 属 Phase 5+ 的异步任务。`EXECUTION_ORDER` 与 mermaid 输出都有测试锁定。
+
+节点用工厂函数闭包持有注入的 `LLMProvider`，因此图本身对厂商无感知，测试可注入脚本化 provider。
+
+### 17.2 Provider 抽象（PRD §16）
+
+| 实现 | 用途 |
+| --- | --- |
+| `MockLLMProvider` | 确定性离线启发式，**无需 key、无需网络**；输出带 `"_mock": true` |
+| `OpenAICompatibleLLMProvider` | 纯 httpx，适配 OpenAI / DeepSeek / Moonshot / vLLM / Ollama |
+
+由 `LLM_PROVIDER` 选择；业务代码只见 `LLMProvider` 接口。选真实 provider 但缺 key 时
+**在构建期就报错**，而不是等第一个用户请求失败。
+
+实测（DeepSeek `deepseek-flash`）：`LLM_BASE_URL=https://api.deepseek.com`，
+`LLM_MODEL=deepseek-flash`。带 `/v1` 与不带 `/v1` 都可用（已实测 401 而非 404）。
+
+### 17.3 结构化输出与重试（PRD §6）
+
+`app/agents/structured.py::generate_structured()` 是唯一把 LLM 自由文本变成校验后对象的入口：
+
+1. `extract_json()` 剥掉 Markdown 围栏与前后解释文字，取第一个完整 JSON 对象；
+2. Pydantic 校验；
+3. 失败时**把具体校验错误回灌进下一次 prompt**（盲目重发很少有用）；
+4. 超过 `LLM_MAX_RETRIES` 抛 `GenerationFailedError`，**不写库**。
+
+容错与严格的边界：**缺失的真实数据必须失败**（否则无法触发重试），
+**纯格式差异必须被强制转换**（否则白白浪费一次重试）。因此
+`"personality": "冷静"` 会被包装成 `["冷静"]`，而 `name` 缺失会报错。
+
+### 17.4 字段别名归一化（实测坑，v2 prompt 的由来）
+
+真实模型不遵守字段名。DeepSeek 实测返回 `core_conflict`（非 `main_conflict`）、
+`setting`（非 `background`）、`visual_style`（非 `style`），
+由于 schema 是 `extra="ignore"`，**约 30 个字段被静默丢弃**，`main_conflict` 直接是 `None`。
+
+关键教训：**Mock provider 完全没暴露这个 bug** —— 因为它被写成只吐我自己定义的键。
+这是「mock 掩盖真实缺陷」的典型案例。
+
+三层修复：
+
+1. `StoryBibleContent._normalize_keys` 把已知同义词折叠到规范字段；
+2. 未能识别的字段进 `extensions`（`dict[str, Any]`）**保留而非丢弃**；
+   赢过别名的规范键，其落选别名也一并保留；
+3. prompt 升到 `story_parser_v2`，明确要求「严格使用下列键名」。
+
+`extensions` 让「模型自发多给的设定」（主题、人物弧光、故事引擎…）在 UI 上以
+「AI 补充设定」展示，不浪费模型的产出。
+
+### 17.5 重新解析的语义
+
+`replace=true` **按名字 upsert，不删表重建**：
+
+- 主键稳定 —— Phase 4 的 shots 要引用 `character_id`；
+- 用户手改过的外貌描述在重新解析后不丢；
+- `replace=true` 只删除本次未再产出的人物/场景。
+
+冲突守卫依据**分析状态**而非行数：改完故事会把状态置回 `NOT_ANALYZED` 但旧人物仍在，
+此时重新解析正是用户的意图，不能报 409。已加回归测试。
+
+### 17.6 Prompt 版本化（PRD §20）
+
+prompt 是 `prompts/<domain>/<name>_v<N>.md` 文件，不写在 Python 里。
+每次生成都记录 `prompt_version` 到 `_meta`，便于后续 A/B。
+**改 prompt 内容必须升版本号**（v1 → v2），否则以 `story_parser_v1` 标注的历史结果会产生误导。
+
+### 17.7 Story Bible 的存储
+
+- `projects.story_bible_json`（JSON 列）存世界设定；
+- `characters` / `locations` 各自建表 —— PRD §6 虽把二者列在同一 JSON 里，
+  但作为独立表 + API 内联返回，保证**只有一个数据源**。
+- `_meta`（provider/model/prompt_versions/usage）存在 JSON 列内，
+  以 `_meta` 命名标记「不属于 Bible 本身」。
+
+### 17.8 未做 / 已知限制
+
+- 解析是**同步**的：真实模型 20–90 秒，请求会一直挂着。
+  PRD §22/§25 的 Celery 异步化属 Phase 5，当前前端以「解析中…」提示覆盖。
+- 无 token 成本计量（`estimated_cost` 恒为 0），PRD §26 待实现。
+- `analysis_status` 的 `RUNNING` 只在同步执行期间可见，页面上几乎捕捉不到。

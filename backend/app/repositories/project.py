@@ -11,7 +11,9 @@ import uuid
 
 from sqlalchemy import Select, func, select
 
+from app.models.character import Character
 from app.models.episode import Episode
+from app.models.location import Location
 from app.models.project import Project
 from app.repositories.base import BaseRepository
 
@@ -91,6 +93,30 @@ class ProjectRepository(BaseRepository[Project]):
             .group_by(Episode.project_id)
         )
         return {row[0]: int(row[1]) for row in self.db.execute(statement).all()}
+
+    def related_counts(self, project_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict[str, int]]:
+        """Batch character + location counts for a page of projects.
+
+        Two grouped queries rather than two per project, so the dashboard list
+        stays O(1) in the number of projects.
+        """
+        if not project_ids:
+            return {}
+
+        counts: dict[uuid.UUID, dict[str, int]] = {
+            project_id: {"characters": 0, "locations": 0} for project_id in project_ids
+        }
+
+        for label, model in (("characters", Character), ("locations", Location)):
+            statement = (
+                select(model.project_id, func.count(model.id))
+                .where(model.project_id.in_(project_ids))
+                .group_by(model.project_id)
+            )
+            for project_id, total in self.db.execute(statement).all():
+                counts[project_id][label] = int(total)
+
+        return counts
 
     # ----------------------------------------------------------------- writes
     def create(

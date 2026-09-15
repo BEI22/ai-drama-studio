@@ -59,6 +59,14 @@ services:
       STORAGE_PUBLIC_BASE_URL: http://localhost:8000/static
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      # Only used when LLM_PROVIDER != "mock". Left blank by default so the
+      # stack runs offline with no key (see docs/TDD.md section 18).
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.4}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+      MOCK_LLM_FAIL_TIMES: ${MOCK_LLM_FAIL_TIMES:-0}
       IMAGE_PROVIDER: ${IMAGE_PROVIDER:-mock}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       TTS_PROVIDER: ${TTS_PROVIDER:-mock}

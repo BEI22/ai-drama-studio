@@ -11,6 +11,7 @@ dependencies = [
     "email-validator>=2.2.0",
     "sqlalchemy>=2.0.36",
     "alembic>=1.14.0",
+    "langgraph>=1.2.0",
     "psycopg[binary]>=3.2.3",
     "redis>=5.2.0",
     "python-jose[cryptography]>=3.3.0",
@@ -37,6 +38,10 @@ packages = ["app"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+# Phase 3 introduced async nodes (LangGraph) and async service methods. Rather
+# than decorating every test, run coroutine tests automatically.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

@@ -75,3 +75,28 @@ class MemoryType(StrEnum):
     PLOT = "PLOT"
     WORLD_RULE = "WORLD_RULE"
     DIALOGUE = "DIALOGUE"
+
+
+class CharacterRole(StrEnum):
+    """Character Bible ``role`` (PRD section 7).
+
+    A closed vocabulary keeps the UI badges meaningful; the extraction schema
+    coerces anything the LLM invents into ``OTHER`` rather than failing
+    validation (see ``app/schemas/bible.py``).
+    """
+
+    PROTAGONIST = "PROTAGONIST"
+    ANTAGONIST = "ANTAGONIST"
+    SUPPORTING = "SUPPORTING"
+    MENTOR = "MENTOR"
+    LOVE_INTEREST = "LOVE_INTEREST"
+    OTHER = "OTHER"
+
+
+class AnalysisStatus(StrEnum):
+    """Lifecycle of the Story Agent run (PRD section 37)."""
+
+    NOT_ANALYZED = "NOT_ANALYZED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"

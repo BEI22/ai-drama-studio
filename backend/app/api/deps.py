@@ -17,7 +17,9 @@ from app.core.database import get_db
 from app.core.exceptions import UnauthorizedError
 from app.core.security import decode_access_token
 from app.models.user import User
+from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
+from app.services.bible_service import CharacterService, LocationService
 from app.services.project_service import ProjectService
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -34,6 +36,18 @@ def get_auth_service(db: DbSession) -> AuthService:
 
 def get_project_service(db: DbSession) -> ProjectService:
     return ProjectService(db)
+
+
+def get_agent_service(db: DbSession) -> AgentService:
+    return AgentService(db)
+
+
+def get_character_service(db: DbSession) -> CharacterService:
+    return CharacterService(db)
+
+
+def get_location_service(db: DbSession) -> LocationService:
+    return LocationService(db)
 
 
 def get_current_user(
@@ -54,17 +68,26 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ProjectServiceDep = Annotated[ProjectService, Depends(get_project_service)]
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
+CharacterServiceDep = Annotated[CharacterService, Depends(get_character_service)]
+LocationServiceDep = Annotated[LocationService, Depends(get_location_service)]
 
 __all__ = [
+    "AgentServiceDep",
     "AppSettings",
     "AuthServiceDep",
+    "CharacterServiceDep",
     "CurrentUser",
     "DbSession",
+    "LocationServiceDep",
     "ProjectServiceDep",
     "bearer_scheme",
+    "get_agent_service",
     "get_auth_service",
+    "get_character_service",
     "get_current_user",
     "get_db",
+    "get_location_service",
     "get_project_service",
     "get_settings",
 ]
