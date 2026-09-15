@@ -41,3 +41,6 @@ Thumbs.db
 backend/.tmp_db/
 .build_backend.log
 .build_frontend.log
+# Commit-message scratch files (write with `git commit -F`): must never be
+# committed by a `git add -A`.
+.commitmsg*

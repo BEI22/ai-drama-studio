@@ -90,6 +90,12 @@ export interface BibleMeta {
   prompt_versions: Record<string, string>;
   usage: UsageRecord[];
   max_retries: number;
+  /**
+   * Fields the user typed in themselves and which were therefore forced onto the
+   * model's output (genre/style). Everything else in the Bible is the model's.
+   * Optional: Bibles analysed before this was recorded won't have it.
+   */
+  pinned_from_user?: Record<string, string>;
 }
 
 export interface StoryBibleResponse {

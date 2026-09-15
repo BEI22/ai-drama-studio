@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="AI Studio">
+  <!--
+    App icon / favicon for AI Studio.
+
+    Next.js App Router serves app/icon.svg automatically and injects it as the
+    document icon, which is what stops browsers falling back to requesting
+    /favicon.ico and logging a 404 on every page load.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#232733"/>
+      <stop offset="100%" stop-color="#181b24"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8b7dff"/>
+      <stop offset="100%" stop-color="#6d5cff"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bg)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.5"
+        fill="none" stroke="#323847" stroke-width="1.5"/>
+
+  <!-- Storyboard frame -->
+  <rect x="16" y="17" width="32" height="30" rx="5"
+        fill="none" stroke="url(#mark)" stroke-width="3.2"/>
+
+  <!-- Play mark: "story becomes film" -->
+  <path d="M28 25.5 L40 32 L28 38.5 Z" fill="#4fd1c5"/>
+</svg>

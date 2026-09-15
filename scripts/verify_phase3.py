@@ -56,6 +56,29 @@ def check_true(label: str, condition: bool, detail: Any = None) -> None:
     check(label + ("" if condition else f" [{detail!r}]"), True, bool(condition))
 
 
+def check_status(label: str, expected: int, status: int, payload: Any) -> None:
+    """Like check(), but a status mismatch also reports the API error code.
+
+    A bare "expected 200, actual 422" cannot be diagnosed from the log alone --
+    the error code (and message) is what tells you whether it was input
+    validation, a provider failure, or a conflict.
+    """
+    if status == expected:
+        check(label, expected, status)
+        return
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    global FAIL
+    print(f"  FAIL  {label}\n        expected: {expected}\n        actual:   {status}")
+    if code or message:
+        print(f"        error:    code={code} message={message}")
+    if isinstance(payload, dict) and payload.get("data") is not None:
+        print(f"        data:     {json.dumps(payload['data'], ensure_ascii=False)[:300]}")
+    FAIL += 1
+
+
 def call(
     method: str,
     path: str,
@@ -400,8 +423,8 @@ status, payload = call(
 check("saving a new story invalidates the analysis", "NOT_ANALYZED",
       data_of(payload)["analysis_status"])
 
-status, _ = call("POST", f"/projects/{project_id}/analyze", token=a_token)
-check("can re-analyze after a story change (no 409)", 200, status)
+status, payload = call("POST", f"/projects/{project_id}/analyze", token=a_token)
+check_status("can re-analyze after a story change (no 409)", 200, status, payload)
 
 # ---------------------------------------------------------------- isolation
 print("== isolation (the important part) ==")

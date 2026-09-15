@@ -133,7 +133,31 @@ class AgentService:
                 row.name.casefold(): row for row in self.locations.list_for_project(project.id)
             }
 
-            project.story_bible_json = state.get("story_bible") or None
+            # Build the complete Bible -- provenance block included -- BEFORE
+            # touching the ORM.
+            #
+            # Writing the column first and then editing the dict in place silently
+            # loses the edit: creating a character below triggers an autoflush that
+            # persists the column as it stood at that moment, and SQLAlchemy does
+            # not track in-place JSON mutation. The result was that ``_meta``
+            # (provider, model, prompt versions, usage, mock flag) never reached
+            # PostgreSQL, so ``GET /bible`` always reported ``meta: null`` and the
+            # UI could not warn that output came from the mock provider.
+            #
+            # Tests missed it because they asserted against the same in-memory
+            # object; only a fresh session reading the row shows the loss.
+            bible = dict(state.get("story_bible") or {}) or None
+            pinned = self._pin_user_hints(project, bible)
+            if bible is not None:
+                bible["_meta"] = {
+                    "provider": self.provider.name,
+                    "model": self.provider.model,
+                    "mock": self.provider.name == "mock",
+                    "prompt_versions": state.get("prompt_versions") or {},
+                    "usage": state.get("usage") or [],
+                    "max_retries": settings.llm_max_retries,
+                    "pinned_from_user": pinned,
+                }
 
             kept_characters: set[str] = set()
             for character in state.get("characters") or []:
@@ -167,18 +191,9 @@ class AgentService:
                     if key not in kept_locations:
                         self.db.delete(row)
 
-            # Record which provider produced this, so mock output is never
-            # mistaken for real model output.
-            if project.story_bible_json is not None:
-                project.story_bible_json["_meta"] = {
-                    "provider": self.provider.name,
-                    "model": self.provider.model,
-                    "mock": self.provider.name == "mock",
-                    "prompt_versions": state.get("prompt_versions") or {},
-                    "usage": state.get("usage") or [],
-                    "max_retries": settings.llm_max_retries,
-                }
-
+            # Assign the finished dict last, so the only flush that carries the
+            # column is the commit below and it always includes ``_meta``.
+            project.story_bible_json = bible
             project.analysis_status = AnalysisStatus.SUCCEEDED.value
             project.analysis_error = None
             project.analyzed_at = datetime.now(UTC)
@@ -229,6 +244,37 @@ class AgentService:
             if field == "description" and row.description:
                 continue
             setattr(row, field, value)
+
+    # ------------------------------------------------------------ user hints
+    # Genre and style are typed in by the user when the project is created, so
+    # they are deliberate choices rather than model inferences. Passing them to
+    # the prompt only *suggests* them: a real model asked for "都市" will happily
+    # answer "都市奇幻", which would silently show the user something they did
+    # not pick and drift every downstream image prompt.
+    #
+    # The mock provider never exposed this because its heuristics always echoed
+    # the hint back (same masking effect as the field-alias bug, TDD 17.4).
+    # Pinning here is provider-independent and makes the result deterministic.
+    USER_PINNED_FIELDS = ("genre", "style")
+
+    @classmethod
+    def _pin_user_hints(cls, project: Project, bible: dict | None) -> dict[str, str]:
+        """Force the user's explicit genre/style onto the generated Bible.
+
+        Returns the fields actually pinned so ``_meta`` can record them -- a
+        caller should always be able to tell what came from the model and what
+        came from the user.
+        """
+        if not bible:
+            return {}
+
+        pinned: dict[str, str] = {}
+        for field in cls.USER_PINNED_FIELDS:
+            value = (getattr(project, field, None) or "").strip()
+            if value:
+                bible[field] = value
+                pinned[field] = value
+        return pinned
 
     # -------------------------------------------------------------- run status
     def status(self, project: Project) -> dict:

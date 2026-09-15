@@ -289,6 +289,14 @@ export function StoryBibleView({ bible }: { bible: StoryBibleResponse }) {
             <p className="mt-2 text-[10px] text-slate-500">
               失败自动重试上限 {meta.max_retries} 次 · 校验不通过的输出不会入库
             </p>
+            {Object.keys(meta.pinned_from_user ?? {}).length > 0 ? (
+              <p className="mt-1 text-[10px] text-slate-500">
+                题材 / 画风 按你在项目里填写的值固定，未被模型改写：
+                {Object.entries(meta.pinned_from_user ?? {})
+                  .map(([field, value]) => `${EXTENSION_LABELS[field] ?? field}=${value}`)
+                  .join(" · ")}
+              </p>
+            ) : null}
           </details>
         ) : null}
       </div>

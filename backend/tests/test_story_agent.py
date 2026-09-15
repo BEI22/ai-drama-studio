@@ -7,6 +7,7 @@ leaving a half-written Bible behind.
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -19,6 +20,7 @@ from app.agents import (
 )
 from app.core.exceptions import GenerationFailedError
 from app.models.enums import AnalysisStatus
+from app.providers.base import LLMProvider, LLMRequest, LLMResult
 from app.providers.llm import MockLLMProvider
 
 STORY = (
@@ -388,3 +390,211 @@ class TestAgentServicePersistence:
 
         assert CharacterRepository(db).get(stale_id) is None
         assert CharacterRepository(db).get_by_name(project.id, "林澈") is not None
+
+
+# --------------------------------------------------------------------------- #
+# Provenance must survive the round-trip to the database (TDD section 13.14)
+# --------------------------------------------------------------------------- #
+class TestProvenanceIsPersisted:
+    """``_meta`` has to be readable by a *later* request, not just in memory.
+
+    The original bug: ``_persist`` set ``story_bible_json`` and then edited the
+    dict in place to add ``_meta``. Creating characters triggers an autoflush in
+    between, so the column was written without ``_meta``; because SQLAlchemy does
+    not track in-place JSON mutation, the later edit was never flushed and
+    ``GET /bible`` reported ``meta: null`` against PostgreSQL.
+
+    Asserting on the same in-memory object (as the other tests do) cannot see
+    that, so this one expires the session and forces a re-SELECT.
+    """
+
+    @pytest.fixture
+    def project(self, db):
+        from app.core.security import hash_password
+        from app.models.project import Project
+        from app.models.user import User
+
+        user = User(email="provenance@example.com", password_hash=hash_password("storytime2026"))
+        db.add(user)
+        db.flush()
+        project = Project(user_id=user.id, name="重生", story_text=STORY, genre="都市")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        return project
+
+    async def test_meta_reads_back_from_the_database(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=MockLLMProvider()).analyze(project)
+
+        # Drop everything the identity map is caching and re-read the row.
+        db.expire_all()
+        reloaded = project.story_bible_json
+
+        assert "_meta" in reloaded, "provenance was lost on the way to the database"
+        assert reloaded["_meta"]["provider"] == "mock"
+        assert reloaded["_meta"]["prompt_versions"]["story_parser"] == "story_parser_v2"
+        assert len(reloaded["_meta"]["usage"]) == 3
+
+    async def test_meta_survives_a_completely_fresh_session(self, db, project) -> None:
+        from app.core.database import SessionLocal
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=MockLLMProvider()).analyze(project)
+        project_id = project.id
+
+        db.expire_all()
+        with SessionLocal() as other:
+            row = other.get(type(project), project_id)
+            assert row is not None
+            assert "_meta" in (row.story_bible_json or {})
+
+    async def test_pinned_fields_read_back_from_the_database(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        db.expire_all()
+        reloaded = project.story_bible_json
+
+        assert reloaded["genre"] == "都市"
+        assert reloaded["_meta"]["pinned_from_user"] == {"genre": "都市"}
+
+    async def test_the_agents_state_dict_is_not_mutated(self, db, project) -> None:
+        """``_meta`` must be added to our own copy, not the workflow's output."""
+        from app.services.agent_service import AgentService
+
+        service = AgentService(db, provider=MockLLMProvider())
+        captured: dict = {}
+
+        original = service._persist
+
+        def spy(project_, state, *, replace):  # noqa: ANN001
+            captured["state"] = state
+            return original(project_, state, replace=replace)
+
+        service._persist = spy  # type: ignore[method-assign]
+        await service.analyze(project)
+
+        assert "_meta" not in (captured["state"].get("story_bible") or {})
+
+
+# --------------------------------------------------------------------------- #
+# User hints are choices, not inferences (TDD section 17.9)
+# --------------------------------------------------------------------------- #
+class GenreOverridingProvider(LLMProvider):
+    """A model that answers *different* genre and style than the user asked for.
+
+    ``MockLLMProvider`` always echoes the hints back, which is exactly why this
+    regression went unnoticed until a real model was wired up -- the same
+    mock-masks-reality effect as the field-alias bug (TDD section 17.4).
+    """
+
+    name: str = "genre-override"
+
+    def __init__(self, genre: str, style: str = "日漫") -> None:
+        super().__init__(name="genre-override", model="stub-v1")
+        self._inner = MockLLMProvider()
+        self._genre = genre
+        self._style = style
+
+    async def health(self) -> bool:
+        return True
+
+    async def generate(self, request: LLMRequest) -> LLMResult:
+        result = await self._inner.generate(request)
+        if "story_parser" in request.prompt_version:
+            data = json.loads(result.text)
+            data["genre"] = self._genre
+            data["style"] = self._style
+            return LLMResult(
+                text=json.dumps(data, ensure_ascii=False),
+                model=result.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
+        return result
+
+
+class TestUserHintPinning:
+    """An explicit genre/style must survive a disagreeing model."""
+
+    @pytest.fixture
+    def project(self, db):
+        from app.core.security import hash_password
+        from app.models.project import Project
+        from app.models.user import User
+
+        user = User(email="hints@example.com", password_hash=hash_password("storytime2026"))
+        db.add(user)
+        db.flush()
+        project = Project(
+            user_id=user.id,
+            name="重生",
+            story_text=STORY,
+            genre="都市",
+            style="国漫",
+        )
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        return project
+
+    async def test_user_genre_beats_a_disagreeing_model(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        assert project.story_bible_json["genre"] == "都市"
+
+    async def test_user_style_beats_a_disagreeing_model(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        assert project.story_bible_json["style"] == "国漫"
+
+    async def test_pinning_is_recorded_as_provenance(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        pinned = project.story_bible_json["_meta"]["pinned_from_user"]
+        assert pinned == {"genre": "都市", "style": "国漫"}
+
+    async def test_unset_hints_are_left_to_the_model(self, db, project) -> None:
+        """Only pin what the user actually filled in."""
+        from app.services.agent_service import AgentService
+
+        project.genre = None
+        project.style = None
+        db.commit()
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        assert project.story_bible_json["genre"] == "都市奇幻"
+        assert project.story_bible_json["_meta"]["pinned_from_user"] == {}
+
+    async def test_blank_hint_is_not_pinned(self, db, project) -> None:
+        from app.services.agent_service import AgentService
+
+        project.genre = "   "
+        db.commit()
+
+        await AgentService(db, provider=GenreOverridingProvider("都市奇幻")).analyze(project)
+
+        assert project.story_bible_json["genre"] == "都市奇幻"
+        assert "genre" not in project.story_bible_json["_meta"]["pinned_from_user"]
+
+    async def test_bible_without_user_hints_is_untouched(self, db, project) -> None:
+        """No hints set must not inject empty fields into the Bible."""
+        from app.services.agent_service import AgentService
+
+        project.genre = None
+        project.style = None
+        db.commit()
+
+        await AgentService(db, provider=MockLLMProvider()).analyze(project)
+
+        assert project.story_bible_json["_meta"]["pinned_from_user"] == {}

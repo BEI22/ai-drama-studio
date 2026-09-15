@@ -285,6 +285,25 @@ docker compose
     mock provider 的输出来自我们自己的代码，天然符合我们的 schema，
     因此真实模型用别名 key 导致字段被丢弃的问题只有接真模型才暴露。
     结论：涉及「外部系统的实际契约」的部分，必须至少跑一次真实调用。
+13. **宿主残留 dev server 会让验收变成假绿**（Phase 3 实测）。先前 `npm run dev`
+    起的 node 进程即使被 kill 也可能留下子进程继续占用 3000，
+    于是 `docker compose up` 的 frontend 容器**启动失败**，
+    而 `verify_phase1.sh` 的「frontend serves HTML」仍然 PASS —— 它连到的是那个
+    旧进程，验的根本不是交付物。
+    识别方法：`docker compose ps` 里没有 frontend，但 `netstat` 显示 3000 在监听。
+    处理：用 PowerShell `Get-NetTCPConnection -LocalPort 3000` 找到 OwningProcess
+    并 `Stop-Process`，再起容器；然后**重新跑一遍**验收。
+14. **SQLAlchemy JSON 列：先赋值、再原地改字典 → 修改丢失**（Phase 3 实测，最隐蔽的一个）。
+    `project.story_bible_json = {...}` 之后又 `project.story_bible_json["_meta"] = {...}`，
+    中间创建人物时触发 **autoflush**，把该列按当时的内容写了一次；
+    而 SQLAlchemy 不追踪 JSON 的原地变更，之后的 `_meta` 再也不会被 flush。
+    结果：Postgres 上 `_meta`（provider / model / prompt_versions / usage / mock 标记）
+    **从未落库**，`GET /bible` 的 `meta` 恒为 `null`，前端因此永远无法提示「这是 mock 输出」。
+    为什么测试没抓到：断言读的是**同一个内存对象**（identity map 命中），
+    只有 ``expire_all()`` 或换一个 Session 重新 SELECT 才看得到丢失。
+    修法：**先把 dict 组装完整（含 `_meta`）再赋值**，且赋值放在最后；
+    并用 `dict(...)` 复制，避免污染工作流返回的 state。
+    教训：凡是「写库后还要再读」的字段，回归测试必须换 Session 读。
 
 ---
 
@@ -515,3 +534,31 @@ prompt 是 `prompts/<domain>/<name>_v<N>.md` 文件，不写在 Python 里。
   PRD §22/§25 的 Celery 异步化属 Phase 5，当前前端以「解析中…」提示覆盖。
 - 无 token 成本计量（`estimated_cost` 恒为 0），PRD §26 待实现。
 - `analysis_status` 的 `RUNNING` 只在同步执行期间可见，页面上几乎捕捉不到。
+
+### 17.9 用户显式填写的内容必须钉住（genre / style）
+
+`genre` 与 `style` 是用户在项目里**主动填写**的，属于决策而非模型的推断结果。
+把它们放进 prompt 只是「建议」：实测真实模型在用户填「都市」时会返回「都市奇幻」，
+于是页面上显示的是用户没选过的值，且会顺着 prompt 一路漂到 Phase 5 的绘图提示词。
+
+`AgentService._pin_user_hints()` 在写库前把这两个字段强制覆盖为用户值，
+并把实际钉住的字段记到 `_meta.pinned_from_user`，
+因此调用方始终能区分「哪些来自模型、哪些来自用户」。
+
+只钉**用户真正填了**的字段（空白/未填则留给模型），否则会把空值注入 Bible。
+
+> 又是 mock 掩盖的一类问题：启发式引擎会把 hint 原样吐回，所以它永远「通过」。
+> 回归测试用一个**故意与用户不一致**的 provider 来锁定该行为。
+
+### 17.10 溯源信息（provenance）
+
+`_meta`（provider / model / mock / prompt_versions / usage / max_retries / pinned_from_user）
+存在 `story_bible_json` 列内，API 上提到响应顶层的 `meta` 字段。
+
+两点值得记住：
+
+1. 它是「输出是否可信」的唯一依据 —— `mock: true` 是前端提示「这不是真实模型输出」的开关，
+   也是避免 mock 结果被误当成真实产出的防线。
+2. 它曾经**从未落库**（见 §13.14 的 JSON 原地修改坑），
+   所以 `GET /bible` 一直返回 `meta: null` 而无人察觉。
+   现在有换 Session 读取的回归测试守着。

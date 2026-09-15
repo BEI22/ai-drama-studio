@@ -331,8 +331,10 @@ script、storyboard、shots、compose、tasks 等接口。
 - [x] 前端：`Story Agent 解析`面板 + Story Bible 展示（含「AI 补充设定」与运行详情）
 - [x] 前端：人物 / 场景 tab，可查看、编辑外貌与光线、删除
 - [x] **跨用户越权隔离覆盖到人物/场景**（需穿过 join，他人资源一律 404）
-- [x] pytest **306 项**全绿；ruff 全通过
+- [x] 用户显式填写的题材/画风会被**钉住**，不被模型的推断改写（`_meta.pinned_from_user`）
+- [x] pytest **316 项**全绿；ruff 全通过
 - [x] 端到端验收脚本：`verify_phase3.py`（132 项，真实 HTTP + 真实模型下 **0 失败**）
+- [x] 前端在真实浏览器中渲染验证（Playwright + 系统 Chrome，18 项断言，无 console 错误）
 
 **未做（刻意）**：剧本 / 分镜 / 图片 / 视频 / TTS、Celery 异步化、token 成本计量。
 解析目前是同步的（真实模型 20–90 秒阻塞请求），异步化属 Phase 5。
