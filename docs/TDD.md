@@ -179,6 +179,29 @@ healthcheck 与负载均衡使用。带依赖检查的版本是 `GET /api/v1/hea
 37 passed
 ```
 
+### 9.1 前端在真实浏览器中验证（Phase 3 起）
+
+单元/API 测试无法证明「页面上真的长这样」。Phase 3 起增加一层浏览器验证：
+
+- Playwright（独立 venv，不与项目依赖混用）+ **系统已装的 Chrome**
+  （`channel="chrome"`，不额外下载浏览器内核）。
+- 脚本用真实 HTTP 造数据（注册 → 建项目 → 跑真实解析），
+  再注入 `localStorage` 的 token 直接进项目详情页，
+  逐个 tab 断言关键元素可见，并**收集 console 错误**。
+- 截屏留证，便于人工复核视觉结果。
+
+三个必须避开的假绿：
+
+1. **镜像里的前端是构建期产物**（`frontend` 服务没有挂载源码），
+   改完前端**必须 `--build` 重建**，否则验的是旧 bundle。
+2. **宿主残留的 dev server 会抢 3000**，让验收连到旧进程（见 §13.13）。
+3. **locator 歧义**：`人物` 同时命中侧栏 tab 与「查看人物」按钮，
+   要把定位范围收敛到 `nav[aria-label="项目导航"]` 内。
+
+```
+UI checks: passed=18 failed=0
+```
+
 ---
 
 ## 10. Provider 抽象层（Phase 1 仅接口）
