@@ -56,7 +56,9 @@ class Settings(BaseSettings):
     # --- storage ---------------------------------------------------------
     storage_backend: str = "local"
     storage_local_dir: str = str(REPO_DIR / "storage")
-    storage_public_base_url: str = "http://localhost:8000/static"
+    storage_public_base_url: str = "http://localhost:8000/files"
+    # Lifetime of a handed-out file URL (see app/core/signing.py).
+    asset_url_ttl_seconds: int = 3600
 
     # --- providers (Phase 3 wires up LLM; media providers stay mock) ------
     llm_provider: str = "mock"
@@ -72,10 +74,27 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_temperature: float = 0.4
 
-    # Mock provider behaviour. ``mock_llm_fail_times`` makes the first N calls
-    # fail so the retry path can be exercised in tests and demos.
+    # OpenAI-compatible image endpoint (used when image_provider != "mock").
+    # Size defaults to a square that every vendor accepts; a vendor with an
+    # unusual size list overrides IMAGE_WIDTH / IMAGE_HEIGHT.
+    image_api_key: str = ""
+    image_base_url: str = "https://api.openai.com/v1"
+    image_model: str = "gpt-image-1"
+    image_timeout_seconds: float = 180.0
+    image_width: int = 1024
+    image_height: int = 1024
+
+    # Mock providers ------------------------------------------------------
+    # ``mock_llm_fail_times`` makes the first N calls fail so the retry path can
+    # be exercised in tests and demos.
     mock_llm_fail_times: int = 0
     mock_llm_latency_ms: int = 0
+    # Makes the first N image calls fail -- the same idea for the Phase 5 retry
+    # path, which otherwise has no way to fail on purpose offline.
+    mock_image_fail_times: int = 0
+    # Pure-Python rendering: cap the pixel budget so the offline default stays
+    # fast. The provider reports the size it actually produced.
+    mock_image_max_pixels: int = 240_000
 
     # --- http ------------------------------------------------------------
     # NoDecode: pydantic-settings would otherwise try to JSON-decode this list

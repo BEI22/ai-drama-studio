@@ -8,14 +8,13 @@ Run locally::
 from __future__ import annotations
 
 import logging
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -27,7 +26,9 @@ from app.core.exceptions import AppError, ErrorCode
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.responses import fail
+from app.core.signing import verify_storage_signature
 from app.schemas.health import HealthResponse
+from app.storage import StorageError, get_storage
 
 configure_logging(settings.log_level, settings.log_json)
 logger = logging.getLogger("app.main")
@@ -117,12 +118,36 @@ def create_app() -> FastAPI:
 
 
 def _mount_static(app: FastAPI) -> None:
-    """Expose the local storage directory (Phase 1 stand-in for S3/OSS)."""
-    if settings.storage_backend != "local":
-        return
-    storage_dir = Path(settings.storage_local_dir)
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/static", StaticFiles(directory=str(storage_dir)), name="static")
+    """Serve stored files behind a signed, expiring URL (PRD section 27).
+
+    This began as a plain public ``/static`` mount in Phase 1, when no file
+    existed yet. That mount had to go once assets became real: a public path
+    makes the URL the only capability, so any leaked or guessed path would read
+    another user's generated images permanently, which section 27 forbids on two
+    counts ("用户只能访问自己的 project", "文件 URL 使用签名 URL").
+
+    The signature is checked before the filesystem is touched, so a bad signature
+    can never probe for file existence.
+    """
+
+    @app.get("/files/{key:path}", include_in_schema=False)
+    def serve_stored_file(
+        key: str,
+        expires: int | None = None,
+        sig: str | None = None,
+    ) -> Response:
+        if not verify_storage_signature(key, expires, sig):
+            raise HTTPException(status_code=403, detail="文件链接无效或已过期")
+        try:
+            data = get_storage().read(key)
+        except StorageError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        media_type, _ = mimetypes.guess_type(key)
+        return Response(
+            content=data,
+            media_type=media_type or "application/octet-stream",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
 
 
 def _register_exception_handlers(app: FastAPI) -> None:

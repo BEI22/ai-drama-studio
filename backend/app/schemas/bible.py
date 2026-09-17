@@ -30,6 +30,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.core.signing import resign_storage_url
 from app.models.enums import AnalysisStatus, CharacterRole
 
 # A trimmed, non-empty string. Rejects "" / "   " at the boundary.
@@ -171,6 +172,15 @@ class CharacterDraft(BaseModel):
         return value
 
 
+# The reference-image columns persist a signed URL (PRD section 17 names the
+# column ``reference_image_url``, and section 27 requires file URLs to be signed).
+# A signature expires, so the stored value is refreshed on every read -- otherwise
+# a reference image would work for an hour and then be a dead link forever.
+_refresh_reference_url = field_validator("reference_image_url", mode="before")(
+    lambda value: resign_storage_url(value) if value else value
+)
+
+
 class CharacterOut(CharacterDraft):
     """Character as persisted (adds identity + audit fields)."""
 
@@ -182,6 +192,8 @@ class CharacterOut(CharacterDraft):
     reference_image_url: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    _resign_reference = _refresh_reference_url
 
 
 class CharacterCreate(CharacterDraft):
@@ -252,6 +264,8 @@ class LocationOut(LocationDraft):
     reference_image_url: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    _resign_reference = _refresh_reference_url
 
 
 class LocationCreate(LocationDraft):

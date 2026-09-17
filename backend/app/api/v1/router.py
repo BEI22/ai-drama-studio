@@ -11,7 +11,7 @@ Phase 4: episodes, scripts, storyboards, shots
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, bible, episodes, health, projects
+from app.api.v1 import auth, bible, episodes, health, media, projects
 
 api_router = APIRouter()
 
@@ -19,6 +19,7 @@ api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(bible.router)
 api_router.include_router(episodes.router)
+api_router.include_router(media.router)
 api_router.include_router(projects.router)
 
 __all__ = ["api_router"]

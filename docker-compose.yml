@@ -37,6 +37,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: ai_studio_backend
     restart: unless-stopped
     depends_on:
@@ -56,7 +58,7 @@ services:
       LOG_JSON: ${LOG_JSON:-true}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_LOCAL_DIR: /app/storage
-      STORAGE_PUBLIC_BASE_URL: http://localhost:8000/static
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:8000/files}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       # Only used when LLM_PROVIDER != "mock". Left blank by default so the
@@ -68,6 +70,13 @@ services:
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
       MOCK_LLM_FAIL_TIMES: ${MOCK_LLM_FAIL_TIMES:-0}
       IMAGE_PROVIDER: ${IMAGE_PROVIDER:-mock}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_BASE_URL: ${IMAGE_BASE_URL:-https://api.openai.com/v1}
+      IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-1}
+      IMAGE_WIDTH: ${IMAGE_WIDTH:-1024}
+      IMAGE_HEIGHT: ${IMAGE_HEIGHT:-1024}
+      MOCK_IMAGE_FAIL_TIMES: ${MOCK_IMAGE_FAIL_TIMES:-0}
+      MOCK_IMAGE_MAX_PIXELS: ${MOCK_IMAGE_MAX_PIXELS:-240000}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       TTS_PROVIDER: ${TTS_PROVIDER:-mock}
     ports:
@@ -81,6 +90,72 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  # PRD section 21's "Celery Worker": consumes image/video/TTS/compose tasks from
+  # the Redis queue. Phase 5 only enqueues image tasks.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: ai_studio_worker
+    restart: unless-stopped
+    # The image's own HEALTHCHECK curls http://localhost:8000/health, which a
+    # Celery worker never serves -- so the worker reported "unhealthy" forever
+    # while working perfectly, and anything gating on `service_healthy` (or a
+    # human reading `docker compose ps`) would conclude it was down. Ask the
+    # worker itself instead: a broker round-trip proves it is alive AND connected.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.workers.celery_app.celery_app inspect ping --timeout 5 >/dev/null 2>&1 || exit 1
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 45s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ai_studio}:${POSTGRES_PASSWORD:-ai_studio}@postgres:5432/${POSTGRES_DB:-ai_studio}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Never eager here: the whole point of this container is to consume the
+      # queue asynchronously.
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-env}
+      ENVIRONMENT: ${ENVIRONMENT:-docker}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-true}
+      # Same storage settings *and the same volume* as the backend: the worker
+      # writes the bytes, the API serves them back (PRD section 25).
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_DIR: /app/storage
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:8000/files}
+      IMAGE_PROVIDER: ${IMAGE_PROVIDER:-mock}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_BASE_URL: ${IMAGE_BASE_URL:-https://api.openai.com/v1}
+      IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-1}
+      IMAGE_WIDTH: ${IMAGE_WIDTH:-1024}
+      IMAGE_HEIGHT: ${IMAGE_HEIGHT:-1024}
+      MOCK_IMAGE_FAIL_TIMES: ${MOCK_IMAGE_FAIL_TIMES:-0}
+      MOCK_IMAGE_MAX_PIXELS: ${MOCK_IMAGE_MAX_PIXELS:-240000}
+    volumes:
+      - ./backend/app:/app/backend/app
+      - ./prompts:/app/prompts:ro
+      - storage_data:/app/storage
+    # `alembic upgrade head` again is intentional: the worker must not start
+    # consuming tasks before the schema exists, and it cannot see whether the
+    # backend's own migration run has finished. Alembic is idempotent.
+    command: >
+      sh -c "alembic upgrade head &&
+             celery -A app.workers.celery_app.celery_app worker
+                    --loglevel=${LOG_LEVEL:-INFO} --concurrency=2"
 
   frontend:
     build:

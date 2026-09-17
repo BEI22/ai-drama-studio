@@ -6,11 +6,13 @@
 故事 → 剧本 → 分镜 → 图片 → 视频 → 配音 → 字幕/BGM → 成片
 ```
 
-> 当前状态：**Phase 3（Story Agent）已完成**。
-> 已实现认证、项目 CRUD、故事文本录入与项目浏览，以及基于 LangGraph 的故事解析
-> （Story Bible / 人物 / 场景，输出经 Schema 校验）。
-> LLM Provider 默认 `mock`（离线确定性，无需 key），可通过环境变量切换为任意
-> OpenAI 兼容端点（已验证 DeepSeek）。图片 / 视频 / TTS 仍是 `mock` —— 这是刻意为之。
+> 当前状态：**Phase 5（图片）已完成** —— 已打通「故事 → 剧本 → 分镜 → 图片」。
+> 已实现认证、项目 CRUD、Story Agent（Story Bible / 人物 / 场景）、Episode Agent
+> （分集 / 剧本 / 分镜 / 一致性），以及图片流水线：人物与场景参考图、逐镜出图、
+> **Redis + Celery 异步任务**（重试 3 次、幂等）、签名 URL 存储。
+> LLM 与图片 Provider 默认 `mock`（离线确定性，无需 key），可通过环境变量切换为任意
+> OpenAI 兼容端点（LLM 已验证 DeepSeek）。视频 / TTS 仍是 `mock` —— 这是刻意为之，
+> 属 Phase 6-7。
 
 - 产品需求与开发规范：[docs/PRD.md](docs/PRD.md)
 - 技术设计与分层规则：[docs/TDD.md](docs/TDD.md)
@@ -23,10 +25,11 @@
 | --- | --- |
 | 前端 | Next.js 15（App Router）· TypeScript · React 19 · Tailwind CSS 3 |
 | 后端 | Python 3.11 · FastAPI · Pydantic v2 · SQLAlchemy 2.0 · Alembic |
-| 数据库 | PostgreSQL 16（pgvector 待 Phase 4 启用） |
-| 缓存 / 队列 | Redis 7 · Celery（Phase 5 启用） |
+| 数据库 | PostgreSQL 16 |
+| 缓存 / 队列 | Redis 7 · Celery（Phase 5 起启用，独立 worker 容器） |
 | Agent | LangGraph（Phase 3 启用） |
-| 存储 | 本地目录（Phase 1）→ S3/OSS（上线前） |
+| 图片生成 | ImageProvider：`mock`（离线真 PNG）/ 任意 OpenAI 兼容端点 |
+| 存储 | 本地目录 + 签名 URL（Phase 5）→ S3/OSS（上线前） |
 | 合成 | FFmpeg（Phase 8） |
 | 部署 | Docker Compose |
 
@@ -138,8 +141,9 @@ npm run test        # 后端 pytest（hermetic）
 npm run typecheck   # 前端 tsc --noEmit
 npm run build       # 前端生产构建 + 容器镜像
 npm run verify      # 全部端到端验收脚本（Phase 1-4）
+npm run verify:phase5  # Phase 5 图片链路（需 worker 容器在跑，走真 Celery）
 npm run verify:phase4  # 只跑 Phase 4 的那一份
-npm run verify:ui   # 真实 Chrome 渲染 UI（Playwright，Phase 3 + Phase 4）
+npm run verify:ui   # 真实 Chrome 渲染 UI（Playwright，Phase 3 + 4 + 5）
 npm run seed        # 造演示账号 + 已解析项目
 npm run up / down   # 启停 compose 栈
 ```
@@ -313,7 +317,13 @@ script、storyboard、shots、compose、tasks 等接口。
 | `REDIS_URL` | `redis://localhost:6380/0` | 容器内 host 为 `redis:6379`（宿主端口默认 6380，避开本机已有 Redis） |
 | `CORS_ORIGINS` | `http://localhost:3000` | 支持逗号分隔或 JSON 数组 |
 | `STORAGE_BACKEND` | `local` | 后续 `s3` / `oss` |
-| `LLM_PROVIDER` 等 | `mock` | Phase 3 起 LLM 可切换；图片/视频/TTS 仍为 `mock` |
+| `LLM_PROVIDER` | `mock` | Phase 3 起可切换为任意 OpenAI 兼容端点 |
+| `IMAGE_PROVIDER` / `IMAGE_API_KEY` / `IMAGE_BASE_URL` / `IMAGE_MODEL` | `mock` | Phase 5 起图片可切换；`mock` 产出离线真 PNG |
+| `IMAGE_WIDTH` / `IMAGE_HEIGHT` | `1024` | 请求尺寸（mock 会按 `MOCK_IMAGE_MAX_PIXELS` 等比缩小并如实上报实际尺寸）|
+| `MOCK_IMAGE_FAIL_TIMES` | `0` | 让 mock 前 N 次故意失败，用于验证重试路径 |
+| `ASSET_URL_TTL_SECONDS` | `3600` | 签名 URL 有效期（读取时自动续签）|
+| `VIDEO_PROVIDER` / `TTS_PROVIDER` | `mock` | Phase 6-7 |
+| `PIP_INDEX_URL` | `https://pypi.org/simple` | **构建期**（非运行时）：容器内装 Python 依赖用的索引。容器到 PyPI 的路由常比宿主差，卡住时指向镜像源即可 |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 空 / OpenAI / `gpt-4o-mini` | 仅 `LLM_PROVIDER != mock` 时使用 |
 | `LLM_MAX_RETRIES` | `3` | Schema 校验失败后的重试上限 |
 | `LOG_JSON` / `LOG_LEVEL` | `true` / `INFO` | 单行 JSON 日志，自动脱敏 |
@@ -445,3 +455,24 @@ script、storyboard、shots、compose、tasks 等接口。
 - 业务代码不得直接依赖具体模型厂商，一律走 `providers/`。
 - 视频/图片/TTS 等长任务必须异步，绝不阻塞 HTTP 请求。
 - 不留「无法运行的伪代码」——每个功能都要能独立运行和验证。
+
+### Phase 5 — 图片
+
+- [x] `assets` + `generation_tasks` 两张表（迁移 `0005`），含幂等用的部分唯一索引
+- [x] Storage 抽象 + **签名 URL**（PRD §27）：未签名访问一律 403，签名可过期不可伪造
+- [x] 移除 Phase 1 的公开 `/static` 挂载（URL 即凭证，不符合越权要求）
+- [x] ImageProvider 抽象：`mock`（纯标准库真 PNG，像素内嵌提示词哈希条码）/ OpenAI 兼容
+- [x] **Prompt Builder**：按 PRD §19 六层确定性拼装（画风 / 人物 / 场景+光线 / 本镜 / 运镜 / 情绪 / 参考图）
+- [x] Prompt 措辞全在 `prompts/image/*.md`（PRD §20 版本化），空层整行丢弃不留半句话
+- [x] Character Reference / Location Reference 参考图（写入 `reference_image_url`，读取时续签）
+- [x] 逐镜出图 + 整集批量补齐 + 单镜重生成（保留旧图）
+- [x] **Redis + Celery 独立 worker 容器**（PRD §21），状态机 PENDING→RUNNING→SUCCESS / FAILED→RETRY
+- [x] 幂等双保险：在途任务复用（DB 部分唯一索引）+ 已成功任务不重复执行
+- [x] 失败不销毁已有产出：重生成失败时镜头仍是 COMPLETED
+- [x] API（PRD §22）：`shots/{id}/image/generate`、`shots/{id}/regenerate`、`tasks/{id}`、
+      `projects/{id}/tasks`、`tasks/{id}/retry`；➕ 4 个附加端点（参考图 ×2、整集批量、
+      **素材列表**）已在 TDD §19.7 标注
+- [x] 前端：镜头卡片内联图片 + 生成/重生成/重试 + 整集工具栏 + 参考图按钮；轮询到终态自动停止
+- [x] 前端：**素材页**（素材网格 + 类型筛选）与**生成任务页**（任务状态 + 失败重试），
+      对应 PRD §5.3 左导航中标注 Phase 5 的两页
+- [x] 分镜响应一次带回每镜 `media`（图片、尝试次数、待轮询任务），避免 N+1 请求

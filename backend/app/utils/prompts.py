@@ -21,20 +21,40 @@ from app.core.exceptions import NotFoundError
 PROMPTS_DIR = REPO_DIR / "prompts"
 
 _VERSION_RE = re.compile(r"^Version:\s*`?([A-Za-z0-9_\-]+)`?\s*$", re.MULTILINE)
-_USER_SECTION_RE = re.compile(r"^##\s+User\s*$(.*)", re.MULTILINE | re.DOTALL)
-_SYSTEM_SECTION_RE = re.compile(r"^##\s+System\s*$(.*?)(?=^##\s+|\Z)", re.MULTILINE | re.DOTALL)
+# Sections end at the next "## " heading (or EOF), so a file may carry further
+# sections after "## User" -- without the lookahead, "## User" would swallow every
+# later section into the template. "###" does not terminate a section: it is a
+# subsection inside one, and several prompts use it in "## System".
+_SECTION_END = r"(?=^##\s+|\Z)"
+_USER_SECTION_RE = re.compile(rf"^##\s+User\s*$(.*?){_SECTION_END}", re.MULTILINE | re.DOTALL)
+_SYSTEM_SECTION_RE = re.compile(rf"^##\s+System\s*$(.*?){_SECTION_END}", re.MULTILINE | re.DOTALL)
+# Optional. A prompt that omits it behaves exactly as before.
+_NEGATIVE_SECTION_RE = re.compile(
+    rf"^##\s+Negative\s*$(.*?){_SECTION_END}", re.MULTILINE | re.DOTALL
+)
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 
 class Prompt:
     """A loaded, renderable prompt template."""
 
-    __slots__ = ("version", "path", "system", "user_template")
+    __slots__ = ("version", "path", "system", "negative", "user_template")
 
-    def __init__(self, *, version: str, path: Path, system: str, user_template: str) -> None:
+    def __init__(
+        self,
+        *,
+        version: str,
+        path: Path,
+        system: str,
+        user_template: str,
+        negative: str = "",
+    ) -> None:
         self.version = version
         self.path = path
         self.system = system
+        # Exclusions, for providers that take a negative prompt. Empty when the
+        # file has no "## Negative" section.
+        self.negative = negative
         self.user_template = user_template
 
     @property
@@ -56,6 +76,12 @@ class Prompt:
         """
         return self.system, self.user_template.format(**values)
 
+    def render_negative(self, **values: object) -> str | None:
+        """The ``## Negative`` section rendered, or ``None`` when absent."""
+        if not self.negative:
+            return None
+        return self.negative.format(**values)
+
 
 @lru_cache(maxsize=64)
 def load_prompt(relative_path: str) -> Prompt:
@@ -75,7 +101,16 @@ def load_prompt(relative_path: str) -> Prompt:
     user_match = _USER_SECTION_RE.search(text)
     user_template = user_match.group(1).strip() if user_match else text.strip()
 
-    return Prompt(version=version, path=path, system=system, user_template=user_template)
+    negative_match = _NEGATIVE_SECTION_RE.search(text)
+    negative = negative_match.group(1).strip() if negative_match else ""
+
+    return Prompt(
+        version=version,
+        path=path,
+        system=system,
+        user_template=user_template,
+        negative=negative,
+    )
 
 
 def prompt_version(relative_path: str) -> str:

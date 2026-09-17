@@ -34,6 +34,7 @@ from pydantic import (
 )
 
 from app.models.enums import CameraMovement, EpisodeStatus, GenerationStatus, ShotSize, ShotStatus
+from app.schemas.media import ShotImageOut
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 OptionalText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)]
@@ -554,6 +555,10 @@ class StoryboardResponse(BaseModel):
     shots: list[ShotOut] = Field(default_factory=list)
     consistency: ConsistencyReport | None = None
     meta: dict[str, Any] | None = None
+    # Phase 5: per-shot media state, keyed by shot id. Returned here rather than
+    # from a separate endpoint so one request renders the whole storyboard --
+    # including which shots already have a picture and which task to poll.
+    media: dict[str, ShotImageOut] = Field(default_factory=dict)
 
 
 class StoryboardUpdate(BaseModel):

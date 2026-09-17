@@ -61,6 +61,15 @@ class ImageRequest(BaseModel):
 
 
 class ImageResult(BaseModel):
+    """Outcome of one image generation.
+
+    ``data`` carries the raw bytes when the provider returned them (base64 or an
+    inline blob); ``url`` when the vendor hosts the file itself. Providers do NOT
+    write to storage: persisting the asset is the service's job, which keeps
+    vendors swappable and lets a provider be tested without a filesystem.
+    """
+
+    data: bytes | None = None
     url: str | None = None
     storage_key: str | None = None
     width: int | None = None

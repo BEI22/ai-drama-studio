@@ -3,8 +3,8 @@
 > 配套文档：[PRD.md](./PRD.md)（产品需求 + 开发执行规范）
 > 本文档只记录**已经实现**的设计与决策，未实现的部分明确标注为「待开发」。
 
-版本：V1.0 Phase 4
-最后更新：2026-09-15
+版本：V1.0 Phase 5
+最后更新：2026-09-16
 
 ---
 
@@ -455,7 +455,7 @@ docker compose
 | 2 | 项目系统（认证、Project CRUD、Story 输入、列表/详情/创建页） | ✅ 已完成 |
 | 3 | Story Agent（LangGraph、Story Bible、Character/Location、Mock LLM Provider） | ✅ 已完成 |
 | 4 | Episode Agent（Planner / Script / Storyboard / Consistency） | ✅ 已完成 |
-| 5 | 图片（ImageProvider、参考图、Prompt Builder、异步任务） | ⏳ 待开发 |
+| 5 | 图片（ImageProvider、参考图、Prompt Builder、异步任务） | ✅ 已完成 |
 | 6 | 视频（VideoProvider、轮询、重试、Asset 存储） | ⏳ 待开发 |
 | 7 | TTS（音色绑定、台词音频） | ⏳ 待开发 |
 | 8 | 合成（字幕、BGM、FFmpeg、成片） | ⏳ 待开发 |
@@ -894,3 +894,344 @@ Episode Planner 需要一个触发入口；UI 需要独立的复检与镜头读�
   一致性检查器会把这种情况报成 `UNKNOWN_CHARACTER`，属于可接受的可发现失败。
 - 未实现分镜的**局部重生成**（只重画某几个镜头）。
 
+---
+
+## 19. Phase 5 设计（图片流水线）
+
+交付 PRD §31 Phase 5 的四项：**ImageProvider、Character Reference、Location Reference、
+Prompt Builder、Image Task**，外加 §21 的异步架构落地。
+
+### 19.1 端到端链路
+
+```text
+POST /api/v1/shots/{id}/image/generate      （API 层：只受理，不生成）
+  ↓ 校验归属 + 幂等键 + 冲突守卫
+generation_tasks 一行 PENDING
+  ↓ .delay() → Redis（CELERY_BROKER_URL=redis://redis:6379/1）
+Celery worker（独立容器 ai_studio_worker）
+  ↓ execute_task()
+Prompt Builder：读 Bible + shot，按 §19 六层拼装提示词
+  ↓
+ImageProvider.generate()（mock 或 openai 兼容）
+  ↓ 返回 bytes（Provider 不碰存储）
+StorageBackend.save() → storage/project/<pid>/<folder>/<eid>.png
+  ↓
+assets 一行（storage_key + 签名 url + metadata）+ shots.image_asset_id
+  ↓
+task → SUCCESS；客户端轮询 GET /api/v1/tasks/{id} 拿到结果
+```
+
+**关键分工**：API 层只写任务行并投递；Provider 只产出字节；Service 负责落盘与写
+Asset。三者互不知道对方的实现细节，所以换 Provider 不影响 API，换存储不影响
+Provider。
+
+### 19.2 数据层（migration `0005_image_agent`）
+
+| 表 | 说明 |
+| --- | --- |
+| `assets` | PRD §17 列集；`storage_key` 是文件的**持久身份**，`url` 是可再生的签名 URL |
+| `generation_tasks` | PRD §17/§21；`status` 走 §21 的状态机 |
+
+`shots.image_asset_id` 列 Phase 4 已建（PRD §17），本阶段开始真正写入。
+
+**幂等**：`generation_tasks` 上有**部分唯一索引** —— 只约束 `status IN
+(PENDING, RUNNING, RETRY)` 的行。因此「在途任务唯一」被数据库强制执行，而任务失败后
+仍可用同一个 `idempotency_key` 重试（全量唯一索引会把重试也挡掉）。
+
+### 19.3 存储与签名 URL（PRD §25、§27）
+
+- 字节落盘（`STORAGE_LOCAL_DIR`，Docker volume `storage_data`，backend 与 worker
+  **共享同一个 volume**：worker 写、API 读）。
+- 数据库只存 `storage_key` / `url` / `metadata`，符合 §25「不要把媒体存进 PostgreSQL」。
+- `assets.url` 与 `characters/locations.reference_image_url` 都是**签名 + 过期**的 URL
+  （§27），HMAC 覆盖 `<key>:<expires>`，密钥为 `SECRET_KEY`。
+- Phase 1 的公开 `/static` 挂载**已移除**：它以 URL 本身作为唯一凭证，任何人拿到链接
+  就能永久读取他人产出，既不符合 §27 的签名要求，也不符合 §27 的越权要求。改为
+  `GET /files/{key}`，未签名或无签名一律 403。
+
+### 19.4 Prompt Builder（PRD §19）
+
+§19 把最终提示词定义为六层的**组合**：System Style + Character Description +
+Location Description + Current Shot + Camera + Emotion + Reference Image。
+
+Phase 4 让分镜 LLM 自由写 `shots.image_prompt`，实测结果是**措辞不一致**：人物服装、
+场景光照是否出现全凭模型发挥 —— 正是 §19 的「一致性机制」要防的漂移（见 §13.21 的
+同类问题）。因此从 Phase 5 起，**最终提示词的作者是 Prompt Builder**：
+
+- 输入取自 Bible 与 shot 行，同样的输入必然产出逐字节相同的输出；
+- 措辞全部在 `prompts/image/*.md`（§20 的版本化要求），Python 只做占位符映射；
+- `shots.image_prompt` 从「成品」降级为**输入**（`visual_description` 缺失时的回退）。
+- 核心来源记录在 `assets.metadata.layers.core_source`，出图异常时可回溯源。
+
+`_assemble()` 按行拼装，**空层连同整行丢弃** —— 否则会在提示词里留下「人物：」这种
+半句话，反而干扰模型。
+
+### 19.5 ImageProvider（PRD §16）
+
+| Provider | 用途 |
+| --- | --- |
+| `mock`（默认） | 离线确定性 **真 PNG**（纯标准库编码器，不引入 Pillow），无需 key、无网络、零成本 |
+| `openai` | 任意 OpenAI 兼容 `POST /images/generations` |
+
+mock 产出的不是占位图：像素里嵌了一段 32 位条码，编码 `sha256(prompt)` 的前 4 字节，
+因此「这张图确实由该提示词生成」是**可验证**的（`tests/test_image_pipeline.py` 反解
+像素并与哈希比对）。
+
+`MOCK_IMAGE_FAIL_TIMES` 让 mock 前 N 次调用抛出与真实 Provider 相同的 `ProviderError`，
+这样 §21 的重试路径在离线状态下**可被测试**，而不是只有线上才会走。
+
+**参考图的条件化限制（诚实记录）**：`openai` 适配器发的是纯文本生成请求。可移植的
+`/images/generations` 契约无法表达图像条件（那是 `/images/edits` 或各家私有字段），
+所以参考图在 **prompt 层**生效（把被引用对象的 Bible 描述合进提示词），并在
+`metadata.reference_conditioning = "prompt-level"` 中如实标注。发一个部分端点会拒绝、
+部分端点会静默忽略的字段，比说清楚更糟。
+
+### 19.6 异步任务与重试（PRD §21）
+
+§21 点名 **Redis Queue + Celery Worker**，故新增独立 `worker` 容器（与 backend 同镜像，
+`CELERY_TASK_ALWAYS_EAGER=false`）。
+
+**重试用循环而不是 `self.retry`**：Celery 的 retry 会重新投递消息，而 eager 模式根本
+不会重投 —— 于是 `RUNNING → FAILED → RETRY` 这个**数据库可见**的状态机会随传输方式
+改变。改为在 `execute_task()` 内循环，两种模式下行为逐字相同。
+
+``CELERY_TASK_ALWAYS_EAGER=true`` 用于测试与单进程演示：`.delay()` 内联执行，因此测试
+跑的是**真实的投递代码路径**（建任务行 → 投递 → 执行 → 写 Asset），只是没有 broker。
+
+**幂等做了两道**：在途任务复用（部分唯一索引）+ 已 `SUCCESS` 的任务不再执行（消息
+至少投递一次，重复投递不会二次付费、不会用差图覆盖好图）。
+
+### 19.7 API（PRD §22）
+
+§22 规定的媒体端点全部实现：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/shots/{id}/image/generate` | 受理出图；已有图片时 409 |
+| POST | `/api/v1/shots/{id}/regenerate` | `?kind=image\|video\|audio`；video/audio 明确 501 而非静默出图 |
+| GET | `/api/v1/tasks/{id}` | 任务详情；SUCCESS 时附带 `asset` |
+| GET | `/api/v1/projects/{id}/tasks` | 任务列表 + 状态汇总 |
+| POST | `/api/v1/tasks/{id}/retry` | 失败任务重试（重试成功任务 409） |
+
+➕ 4 个超出 §22 的补充端点（§31 Phase 5 要求 Character/Location Reference，但 §22
+未给路由；整集批量与逐集汇总同理）：
+
+```text
+POST /api/v1/characters/{id}/reference/generate
+POST /api/v1/locations/{id}/reference/generate
+POST /api/v1/episodes/{id}/images/generate      # 批量补齐缺失的镜头图片
+GET  /api/v1/projects/{id}/assets               # 素材页数据源（§22 未给读取素材的路由）
+```
+
+**镜头级端点的 404 而非 403**：他人镜头一律返回 404（不泄漏「这条 id 存在」）。
+
+返回码沿用既有约定：顶层聚合 POST 用 201，嵌套集合 POST 用 200。
+
+### 19.8 前端
+
+- `components/media-panel.tsx`：`ShotImagePanel`（单镜图片 + 生成/重生成/重试）、
+  `EpisodeImageToolbar`（整集批量 + 汇总）、`ReferenceImageButton`（参考图）。
+- **轮询会停**：只在任务可变化（PENDING/RUNNING/RETRY）时轮询，终态清除定时器。否则
+  一个 50 镜的分镜板会常驻 50 个定时器。
+- **不接受「点了按钮就等于出图」**：生成端点返回的是**任务**不是图片，图片在任务结算
+  后由父组件重读分镜响应才出现；子组件报告完成，父组件负责刷新。
+- `components/media-tabs.tsx`：**素材页**（素材网格 + 类型筛选，仅列出有内容的类型）与
+  **生成任务页**（任务表 + 状态徽章 + 失败重试），对应 §5.3 左导航中的两页。
+  §2.1 把「生成任务状态 + 失败重试」列为 MVP 必做，故任务页不是可选件；
+  §22 没有读取素材的路由，素材页读上面那条补充端点。
+  两页都是**只读为主**（任务页仅能重试），生成物是用户的作品，不放一键误删。
+  任务页只在有任务可变化时轮询，终态即停。
+- `DELIVERED_PHASE` 4 → 5：该常量驱动「尚未实现」占位，不同步改会出现
+  **「声称做完 Phase 5、页面却写着未实现」**的自相矛盾。
+
+### 19.9 实测记录
+
+| 验收 | 结果 |
+| --- | --- |
+| `pytest`（全量，hermetic） | **497 passed** |
+| Phase 5 专项测试 | 素材端点 3；图片流水线 41（提示词 / Provider / mock 字节 / 服务状态机 / 签名 / HTTP） |
+| `ruff check` + `ruff format --check` | 全部通过（117 文件） |
+| `tsc --noEmit` | 通过 |
+| HTTP 端到端（**真 worker**，非 eager） | **44/44 PASS**（`HTTP_ACCEPT_EXIT=0`） |
+| 真实读数 | 整集镜头全部出图；34 个任务 SUCCESS / **0 FAILED**；签名 URL 可下载、无签名 403；重生成保留旧图；跨用户 404 |
+| 浏览器（真实 Chrome，Playwright） | **27/27 PASS**（`UI_EXIT=0`） |
+| 浏览器覆盖 | 镜头卡片内联出图（489×489 真实解码）、整集批量 3/3 全部加载、重生成显示「2 次尝试」、人物参考图、**素材页 5 图块全部加载且带标签**、**生成任务页 5 任务全 SUCCESS**、控制台零错误 |
+
+浏览器截图：`D:\HermesWorkplace\generated\images\ai-studio-phase5-ui\`（6 张，含素材页与任务页）。
+
+**回归**（本轮改了 `extract_json`（Phase 3/4 节点共用）、分镜响应结构（新增 `media`）、
+`DELIVERED_PHASE`，故必须复跑既有阶段的验收，不能只看 Phase 5 自己绿）：
+
+| 回归项 | 命令 | 结果 |
+| --- | --- | --- |
+| 阶段 1–4 HTTP | `npm run verify` | **87 passed / 0 failed**（`VERIFY_EXIT=0`） |
+| Phase 3 浏览器 | `npm run verify:ui` 第一段 | **19 / 0** |
+| Phase 4 浏览器 | `npm run verify:ui` 第二段 | **18 / 0** |
+| Phase 5 浏览器 | `npm run verify:ui` 第三段 | **27 / 27 PASS** |
+| 汇总 | `npm run verify:ui` | `VERIFY_UI_EXIT=0` |
+
+回归中查出并修掉的**陈旧测试工件**：`verify_ui_phase3.py` 原本断言「后续阶段 tab 仍是占位」，
+并随阶段推进把断言对象从「剧集」挪到「素材」。Phase 5 交付后**已无占位页**，该断言必然失败 ——
+它测的是「还没做完」，不是产品对错。已反转为不变量：**声称已交付的 tab 必须渲染自己的内容，
+且页面上不得再出现「尚未实现」**。这类断言每交付一阶段就要复核一次，否则会从「绿灯」悄悄
+变成「对着正确产品报错」。
+
+端到端验收脚本：`D:\HermesWorkplace\cache\verify_phase5_http.py`（Python + 显式
+UTF-8，见 §16）。
+
+### 19.10 本阶段新增的工程坑
+
+**① 会过期的值不能持久化（真 bug，取证后修复）**
+
+`characters.reference_image_url` / `locations.reference_image_url` 是 PRD §17 的列，
+而 §27 要求文件 URL 必须签名 + 过期。把签名 URL 直接写库，等于**把一个一小时后失效的
+值当成持久事实**：图片一直在磁盘上，但 URL 一小时后变成永久死链。
+
+实测取证：库中值为 `...?expires=<ts>&sig=...`，当时距过期仅剩 3490 秒 —— 一小时内
+必然复现。
+
+修法：新增 `resign_storage_url()`，**读取时按 storage_key 重新签名**；通过 schema 的
+`field_validator` 挂在 `CharacterOut` / `LocationOut` 上，于是 list / create / update /
+storyboard 所有序列化路径自动生效，不需要逐个调用点去改。
+
+教训：**「签名 URL」是凭证不是数据。任何带 exp 的值都不能落库当事实，只能落库其持久
+身份（storage_key）。**
+
+**② 配置回退掩盖了改动（假绿风险）**
+
+`STORAGE_PUBLIC_BASE_URL` 同时存在于 `.env`、`.env.example` 与 `docker-compose.yml`。
+改了 `config.py` 的默认值后，URL 仍然是旧的 `/static` —— 因为**三处都覆盖了它**。
+教训：改默认值前先 `grep` 同名键的所有来源，否则验的是配置不是代码。
+
+**③ PRD 未到的阶段不能静默降级**
+
+`/regenerate?kind=video` 若忽略参数直接出图，会产生「请求视频、拿到图片」的静默错误。
+改为显式 501 + 说明 Phase 6 提供。**静默降级比拒绝更危险**，因为调用方会以为成功。
+
+**④ prompt 加载器的章节边界（既有隐患，本轮暴露）**
+
+`## User` 段的正则用 `re.DOTALL` 捕获到**文件末尾**，因此任何写在 `## User` 之后的章节
+（如新的 `## Negative`）都会被吞进模板。此前所有 prompt 恰好把 `## User` 放在最后，
+所以从未暴露。
+
+修复加了 `(?=^##\s+|\Z)` 前瞻。做了 **A/B 验证**：7 个既有 prompt 的渲染结果与修复前
+**逐字节相同**，只有新增文件受影响 —— 证明修复没有改变既有行为。
+
+教训：**改共享解析器必须做 A/B 回归**，否则「顺手修的隐患」可能悄悄改写全部既有行为。
+
+**⑤ 中间产物污染门禁**
+
+在仓库根写的临时诊断脚本（`.p5*.py`）被 `ruff check` 计入，报出 53 个与代码无关的
+错误。教训：诊断脚本一律写到仓库外（`D:\HermesWorkplace\cache\`），或收工前先删。
+
+**⑥ worker 健康检查查错了东西（真缺陷）**
+
+新增的 worker 容器沿用同一镜像，于是**继承了镜像里的 HTTP 健康检查**
+（`curl http://localhost:8000/health`）。但 Celery worker 不提供 HTTP 服务，因此它
+**全程 healthy 不了**：`docker compose ps` 永远显示 `unhealthy`，任何
+`depends_on: condition: service_healthy` 的编排都会判它已死。
+
+改动前实测：`FailingStreak: 36`，报错 `curl: (7) Failed to connect to localhost port 8000`。
+
+修法：给 worker 单独的健康检查，问 worker 自己 ——
+`celery -A app.workers.celery_app.celery_app inspect ping`，它同时证明进程活着**且**与
+broker 连通（比 HTTP 探针语义更强）。
+
+教训：**多容器共用镜像时，镜像里的 HEALTHCHECK 是共享的，必须逐个服务复核**。
+「用同一个镜像」不等于「能沿用同一个探针」。
+
+**⑦ 镜像分层顺序错误导致每次改代码都重装依赖（真浪费）**
+
+`backend/Dockerfile` 原先把 `COPY app ./app` 放在 `pip install ".[dev]"` **之前**，
+于是**任何源码改动都会作废 pip 层**，每次构建重装全部依赖（本机实测每次数分钟，
+Phase 5 迭代中被反复支付）。
+
+修法：依赖层只依赖 `pyproject.toml` —— 先用一小段 `tomllib` 把依赖清单导出成
+requirements 再装，然后才 `COPY` 源码，最后 `pip install --no-deps -e .` 装项目本身。
+
+教训：**Dockerfile 的 COPY 顺序就是缓存键**。把「很少变的」放上层、「经常变的」放下层。
+
+**⑧ JSON 抽取的宽松启发式会静默返回错值（真 bug，线上触发后才暴露）**
+
+分镜生成在浏览器验收的 bootstrap 阶段报出 422，后端日志给出了真因：
+
+```text
+GenerationFailedError: AI 输出在 3 次尝试后仍无法通过 Schema 校验：
+无法从 LLM 输出中解析 JSON：Extra data: line 1 column 11910 (char 11909)
+```
+
+`Extra data` 意味着模型输出了**两个 JSON 对象拼接**（约 12KB 的对象后面又跟了一个）。
+而 `extract_json` 当时用的是「第一个 `{` 到最后一个 `}`」的最宽跨度启发式 —— 这个跨度
+**仍然包含两个值**，`json.loads` 必然拒绝。三次尝试全部走同一条死路，白烧 160 秒后
+以 422 失败。
+
+改用 `json.JSONDecoder().raw_decode()` 扫描**第一个能完整解析的值**，尾部内容无关紧要；
+从光标处向前推进，还能跳过正文里出现的无关花括号。
+
+写了新旧实现的对照探针（`D:\HermesWorkplace\cache\probe_extract_json_old_vs_new.py`），
+结果值得单独记一笔：
+
+| 输入形态 | 旧实现 | 新实现 |
+| --- | --- | --- |
+| 两个 JSON 拼接（线上真实形态） | ❌ `Extra data` | ✅ |
+| 第一个完整、第二个应忽略 | ❌ `Extra data` | ✅ |
+| 前缀被截断，完整值在后面 | ❌ `Expecting ',' delimiter` | ✅ |
+| **正文含无关花括号** | ⚠️ **静默返回 `[]`（错值，不报错）** | ✅ 正确值 |
+| 两个 fenced 代码块 | ✅ | ✅ |
+
+**第 4 行比失败更危险**：旧启发式在这种输入下不抛异常，而是安静地返回一个**空数组**。
+如果 schema 恰好接受空列表（分镜的 `shots` 就可以），就会把一份空分镜持久化下去 ——
+用户看到「生成成功」，却什么都没有。**报错至少是可见的失败；静默错值是无声的数据损坏。**
+
+教训：**「宽松地把内容抠出来」和「只接受一个完整值」是两回事。** 启发式越宽松，
+越容易在解析失败时滑向「解析出了别的东西」，而那比抛异常难发现得多。
+用 `raw_decode` 这类有明确语义的解析器，把「解析到哪里结束」交给库去判断。
+
+**⑨ 验收指标选错会造出「假失败」——同一次检查先假失败、后真通过**
+
+`整集图片全部真实加载` 这条检查出现过三次结果：单独跑 **3/3 通过**、全量回归
+**2/3 失败**、修好后稳定 **3/3**。同一个产品、同一份数据，结论却随运行时机变化 —— 这类
+「飘」的检查必须先当成**检查本身有问题**来查，而不是先当成产品 bug。
+
+根因是**观测顺序**：面板在还有任务在跑时每 3 秒重取分镜，而每次重取的签名 URL 都是**新签的**
+（这是 §27 的设计，URL 必须新鲜），于是每个 `<img>` 的 `src` 都变、浏览器重新开始加载。
+我却要求「连续两次读到全部加载完成」—— **只要轮询没停，这个条件永远不可能满足**。
+当时我误判为「渲染竞态」并加重了等待，反而离真相更远。
+
+正确的观测序列是**先等轮询停下，再读像素**：给工具栏加 `data-running`（`running === 0`
+正是「不再重取」的精确信号，与 `useEffect` 里 `if (running === 0) return` 同源），
+等 `running=0` 且 `with_image >= 镜头数`，再要求连续两次全部解码完成。
+
+旁证：素材页加载的是**同一批文件**，5/5 全部成功 —— 说明服务端一直在正常供图，
+所以「2/3 未加载」只可能是浏览器侧的观测窗口问题，不可能是产品缺陷。
+
+教训：**检查失败时，先问「我这个指标测的是产品状态，还是测的我读取它的时机」**。
+若一个检查在不同时机给出不同结论，它就是不可信的检查 —— 修检查，而不是反复重跑等它变绿。
+顺带：失败信息要带上足以定位的读数（现在会打印 `running=` 与 `with_image=`），
+否则「2/3」这种输出只能靠猜。
+
+**⑩ 裸跑 `ruff format .` 会改到只读的 PRD（规格污染）**
+
+收尾复核时发现 `docs/PRD.md` 在工作区里有 1 行改动 —— 在 §468 的 Python 代码块里多了一个
+空行（`class StoryState` 之前）。提交历史是干净的，**改动只存在于工作区**，来源是早前为图
+省事跑的一次 `ruff format .`（**全仓库**）：ruff 会把 Markdown 里的 Python 代码块一并格式化，
+于是把一个只读规格文档改了。
+
+已 `git checkout -- docs/PRD.md` 回退，并复核 PRD 在历史与工作区都无差异。
+
+根因不是 ruff，而是**绕过了限定目录的规范入口**：`npm run lint` 明确只作用于
+`backend/app backend/tests backend/migrations scripts`，`docs/` 根本不在其中。
+手敲 `ruff format .` 把它扩到了全仓库。
+
+教训：**门禁命令的作用域本身是设计的一部分。** 图快把作用域放大，就会改到不该改的文件 ——
+而在「PRD 只读」这种规则下，代价是规格被悄悄污染，比测试失败难发现得多。
+一律走 `npm run lint`，不要裸跑 `ruff`。
+
+**⑪ 容器到 PyPI 的路由可能比宿主更差**
+
+构建卡在 `pip install` 长时间无进展，而宿主 `curl https://pypi.org/simple/fastapi/`
+是 200 / 0.38s —— 说明瓶颈在**容器内的路由/DNS**，不在宿主网络。
+
+修法：把索引做成 build arg（`PIP_INDEX_URL`，默认仍是官方 PyPI，行为不变），需要时在
+`.env` 里指向镜像源即可，不必改 Dockerfile。**不把某地的镜像源硬编码进仓库**，
+只留出可配置的口子。

@@ -43,6 +43,7 @@ from app.api.deps import (
     CharacterServiceDep,
     CurrentUser,
     EpisodeServiceDep,
+    ImageServiceDep,
     LocationServiceDep,
     ProjectServiceDep,
 )
@@ -94,7 +95,11 @@ def compose_script(episode, characters: dict[str, str]) -> dict:
 
 
 def compose_storyboard(
-    episode, shots: list[ShotOut], consistency, characters: dict[str, str]
+    episode,
+    shots: list[ShotOut],
+    consistency,
+    characters: dict[str, str],
+    media: dict[str, dict] | None = None,
 ) -> dict:
     """Storyboard document + flat shot rows + the latest consistency report."""
     stored = dict(episode.storyboard_json or {})
@@ -119,6 +124,7 @@ def compose_storyboard(
         shots=shots,
         consistency=consistency,
         meta=meta,
+        media=media or {},
     ).model_dump(mode="json") | {"characters": characters}
 
 
@@ -297,16 +303,21 @@ def get_storyboard(
     user: CurrentUser,
     episodes: EpisodeServiceDep,
     characters: CharacterServiceDep,
+    images: ImageServiceDep,
 ) -> dict:
     episode = episodes.get_model(user.id, episode_id)
     project = episodes.get_project_for_episode(episode)
-    shots = [
-        ShotOut.model_validate(row).model_dump(mode="json")
-        for row in episodes.shots.list_for_episode(episode.id)
-    ]
+    shot_rows = episodes.shots.list_for_episode(episode.id)
+    shots = [ShotOut.model_validate(row).model_dump(mode="json") for row in shot_rows]
     return ok(
         compose_storyboard(
-            episode, shots, episodes.check(episode), _character_lookup(characters.list(project))
+            episode,
+            shots,
+            episodes.check(episode),
+            _character_lookup(characters.list(project)),
+            # Phase 5: each shot's picture state, so the storyboard renders in one
+            # request (assets, attempt count, and the task to poll while running).
+            media=images.shot_media_map(shot_rows),
         )
     )
 

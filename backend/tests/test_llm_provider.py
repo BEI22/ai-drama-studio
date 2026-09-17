@@ -185,6 +185,32 @@ class TestExtractJson:
     def test_array(self) -> None:
         assert extract_json("[1, 2]") == [1, 2]
 
+    def test_two_concatenated_objects(self) -> None:
+        """The failure that cost 160s in production: two objects, no separator.
+
+        The old "first { to last }" heuristic returned both values joined, so
+        json.loads rejected it with "Extra data" and every attempt failed.
+        """
+        text = '{"scenes": [{"scene_id": "S01"}]}\n{"scenes": [{"scene_id": "S01"}]}'
+        assert extract_json(text) == {"scenes": [{"scene_id": "S01"}]}
+
+    def test_second_object_ignored_when_first_is_complete(self) -> None:
+        text = '{"took": 3}\n这是我第二次的输出：\n{"took": 4}'
+        assert extract_json(text) == {"took": 3}
+
+    def test_first_complete_value_wins_over_truncated_prefix(self) -> None:
+        """A truncated object must not shadow the complete one after it."""
+        text = '{"scenes": [{"scene_id":\n{"scenes": [{"scene_id": "S02"}], "ok": true}'
+        assert extract_json(text) == {"scenes": [{"scene_id": "S02"}], "ok": True}
+
+    def test_prose_with_a_stray_brace_before_the_payload(self) -> None:
+        text = '示例格式 { 见下 }\n真正的输出：\n{"scenes": []}'
+        assert extract_json(text) == {"scenes": []}
+
+    def test_fenced_object_followed_by_a_second_block(self) -> None:
+        text = '```json\n{"a": 1}\n```\n\n补充说明：\n```json\n{"a": 2}\n```'
+        assert extract_json(text) == {"a": 1}
+
     def test_empty_input_raises(self) -> None:
         with pytest.raises(ValueError, match="为空"):
             extract_json("")

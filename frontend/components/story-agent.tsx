@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { LoadingState, FormError, EmptyState } from "@/components/states";
+import { ReferenceImageButton } from "@/components/media-panel";
 import { api, ApiError, type Character, type StoryBibleResponse, type StoryLocation } from "@/lib/api";
 import {
   ANALYSIS_BADGE_CLASS,
@@ -344,11 +345,14 @@ export function CharactersTab({
   analysisStatus,
   characters,
   onCharactersChanged,
+  onReferenceChanged,
 }: {
   projectId: string;
   analysisStatus: AnalysisStatus;
   characters: Character[];
   onCharactersChanged: (next: Character[]) => void;
+  /** Re-reads the Bible: a fresh reference URL is minted per read (PRD §27). */
+  onReferenceChanged?: () => void;
 }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -510,6 +514,18 @@ export function CharactersTab({
                 </div>
               ) : null}
 
+              {/* Phase 5: a reusable visual anchor for this character, feeding
+                  PRD §19's Reference Image layer. Hidden while editing so the
+                  edit controls stay the focus. */}
+              {editing ? null : (
+                <ReferenceImageButton
+                  kind="character"
+                  id={character.id}
+                  currentUrl={character.reference_image_url ?? null}
+                  onChanged={() => onReferenceChanged?.()}
+                />
+              )}
+
               {editing ? (
                 <div className="space-y-2 border-t border-ink-700 pt-3">
                   <label className="block text-[10px] uppercase tracking-wide text-slate-500">
@@ -561,10 +577,13 @@ export function LocationsTab({
   analysisStatus,
   locations,
   onLocationsChanged,
+  onReferenceChanged,
 }: {
   analysisStatus: AnalysisStatus;
   locations: StoryLocation[];
   onLocationsChanged: (next: StoryLocation[]) => void;
+  /** Re-reads the Bible: a fresh reference URL is minted per read (PRD §27). */
+  onReferenceChanged?: () => void;
 }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -722,6 +741,13 @@ export function LocationsTab({
                     {location.time ? <span>时间：{location.time}</span> : null}
                     {location.lighting ? <span>光线：{location.lighting}</span> : null}
                   </div>
+                  {/* Phase 5 location reference sheet. */}
+                  <ReferenceImageButton
+                    kind="location"
+                    id={location.id}
+                    currentUrl={location.reference_image_url ?? null}
+                    onChanged={() => onReferenceChanged?.()}
+                  />
                 </>
               )}
             </div>

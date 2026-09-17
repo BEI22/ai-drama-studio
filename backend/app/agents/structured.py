@@ -51,11 +51,46 @@ _REPAIR_TEMPLATE = """
 """
 
 
+def _scan_first_json(text: str) -> object:
+    """Parse the first *complete* JSON value in ``text``, ignoring what follows.
+
+    This exists because the obvious heuristic -- take everything from the first
+    ``{`` to the last ``}`` -- is wrong for a real failure mode: when a model emits
+    two objects back to back (``{...}\\n{...}``), that span still contains two
+    values and ``json.loads`` rejects it with "Extra data". Seen in production on
+    the storyboard node: a ~12 KB object followed by a second one, which failed all
+    three attempts and burned 160s before erroring out.
+
+    ``raw_decode`` parses one value and reports where it ended, so trailing junk is
+    irrelevant. Scanning forward (rather than taking a fixed position) also covers
+    prose that contains an early unparseable ``{`` before the real payload.
+    """
+    decoder = json.JSONDecoder()
+    cursor = 0
+    length = len(text)
+
+    while cursor < length:
+        starts = [pos for pos in (text.find("{", cursor), text.find("[", cursor)) if pos != -1]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, _end = decoder.raw_decode(text, start)
+            return value
+        except json.JSONDecodeError:
+            # Not a JSON value here (prose brace, or a truncated object): advance
+            # one character and look again.
+            cursor = start + 1
+
+    raise ValueError("输出中找不到完整的 JSON 值")
+
+
 def extract_json(text: str) -> object:
     """Pull a JSON value out of an LLM response.
 
-    Handles the three shapes models actually produce: a bare object, an object
-    wrapped in a ```json fence, and an object buried in prose.
+    Handles the shapes models actually produce: a bare object, an object wrapped in
+    a ```json fence, an object buried in prose, and -- the case that used to fail --
+    several JSON values concatenated, where the first complete one wins.
     """
     if not text or not text.strip():
         raise ValueError("LLM 返回内容为空")
@@ -69,19 +104,22 @@ def extract_json(text: str) -> object:
     stripped = text.strip()
     candidates.append(stripped)
 
-    # Widest balanced-looking span between the first { / [ and the last } / ].
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = stripped.find(opener)
-        end = stripped.rfind(closer)
-        if 0 <= start < end:
-            candidates.append(stripped[start : end + 1])
-
     last_error: Exception | None = None
     for candidate in candidates:
         try:
             return json.loads(candidate)
         except json.JSONDecodeError as exc:
             last_error = exc
+            continue
+
+    # Nothing parsed as a whole document. Fall back to scanning for the first
+    # complete value -- this is what rescues concatenated or commentary-wrapped
+    # output.
+    for candidate in candidates:
+        try:
+            return _scan_first_json(candidate)
+        except ValueError as exc:
+            last_error = last_error or exc
             continue
 
     raise ValueError(f"无法从 LLM 输出中解析 JSON：{last_error}")

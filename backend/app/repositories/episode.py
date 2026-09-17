@@ -108,6 +108,13 @@ class ShotRepository(BaseRepository[Shot]):
         )
         return list(self.db.execute(statement).scalars().all())
 
+    def list_by_ids(self, shot_ids: list[uuid.UUID]) -> list[Shot]:
+        """Fetch many shots in one query, for labelling a list of assets."""
+        if not shot_ids:
+            return []
+        statement = select(Shot).where(Shot.id.in_(shot_ids))
+        return list(self.db.execute(statement).scalars().all())
+
     def count_for_episode(self, episode_id: uuid.UUID) -> int:
         statement = select(func.count()).select_from(Shot).where(Shot.episode_id == episode_id)
         return int(self.db.execute(statement).scalar_one())

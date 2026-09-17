@@ -13,8 +13,10 @@ from app.core.database import Base, TimestampMixin
 from app.models.enums import AnalysisStatus, ProjectStatus
 
 if TYPE_CHECKING:  # pragma: no cover
+    from app.models.asset import Asset
     from app.models.character import Character
     from app.models.episode import Episode
+    from app.models.generation_task import GenerationTask
     from app.models.location import Location
     from app.models.user import User
 
@@ -73,4 +75,16 @@ class Project(Base, TimestampMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="Location.sort_order",
+    )
+    # Phase 5: every generated file and every async generation task belongs to a
+    # project, so deleting a project must take its assets and task history too.
+    assets: Mapped[list[Asset]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    generation_tasks: Mapped[list[GenerationTask]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )

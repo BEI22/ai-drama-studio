@@ -29,7 +29,9 @@ from app.core.database import Base, TimestampMixin
 from app.models.enums import ShotStatus
 
 if TYPE_CHECKING:  # pragma: no cover
+    from app.models.asset import Asset
     from app.models.episode import Episode
+    from app.models.generation_task import GenerationTask
 
 
 class Shot(Base, TimestampMixin):
@@ -83,3 +85,17 @@ class Shot(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default=ShotStatus.DRAFT.value, nullable=False)
 
     episode: Mapped[Episode] = relationship(back_populates="shots")
+    # Phase 5+: media hangs off the shot. A shot accumulates one asset per
+    # attempt, so the newest successful image is the one to render -- and an
+    # earlier success is never destroyed by a later failure.
+    assets: Mapped[list[Asset]] = relationship(
+        back_populates="shot",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Asset.created_at",
+    )
+    generation_tasks: Mapped[list[GenerationTask]] = relationship(
+        back_populates="shot",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

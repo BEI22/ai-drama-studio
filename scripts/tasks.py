@@ -46,6 +46,11 @@ UI_VERIFIERS = [
             "AI_STUDIO_UI_VERIFIER_PHASE4", "D:/HermesWorkplace/cache/verify_ui_phase4.py"
         )
     ),
+    Path(
+        os.environ.get(
+            "AI_STUDIO_UI_VERIFIER_PHASE5", "D:/HermesWorkplace/cache/verify_ui_phase5.py"
+        )
+    ),
 ]
 
 
@@ -120,6 +125,25 @@ def verify_phase4() -> int:
     return run([sys.executable, "scripts/verify_phase4.py"])
 
 
+PHASE5_VERIFIER = Path(
+    os.environ.get(
+        "AI_STUDIO_HTTP_VERIFIER_PHASE5", "D:/HermesWorkplace/cache/verify_phase5_http.py"
+    )
+)
+
+
+def verify_phase5() -> int:
+    """Phase 5 acceptance over real HTTP, against the running stack.
+
+    Needs the worker container up: unlike the pytest suite this exercises the real
+    Redis -> Celery path (no eager mode), so a missing worker shows up as tasks
+    stuck in PENDING rather than as a fake pass.
+    """
+    if not PHASE5_VERIFIER.exists():
+        sys.exit(f"Phase 5 verifier missing at {PHASE5_VERIFIER}")
+    return run([sys.executable, PHASE5_VERIFIER])
+
+
 def verify_ui() -> int:
     """Render every delivered phase's UI in real Chrome via Playwright."""
     if not QA_PY.exists():
@@ -169,6 +193,7 @@ TASKS = {
     "verify": verify,
     "verify:ui": verify_ui,
     "verify:phase4": verify_phase4,
+    "verify:phase5": verify_phase5,
     "seed": seed,
     "up": up,
     "down": down,

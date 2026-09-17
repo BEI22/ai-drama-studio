@@ -452,6 +452,104 @@ export interface StoryboardResponse {
   consistency: ConsistencyReport | null;
   meta: BibleMeta | null;
   characters: Record<string, string>;
+  /** Phase 5: per-shot media state, keyed by shot id. */
+  media: Record<string, ShotImageState>;
+}
+
+// ----------------------------------------------------------------- media (Phase 5)
+export type AssetType = "IMAGE" | "VIDEO" | "AUDIO" | "BGM" | "SFX" | "SUBTITLE" | "FINAL_VIDEO";
+
+export type TaskType =
+  | "STORY_ANALYSIS"
+  | "SCRIPT"
+  | "STORYBOARD"
+  | "IMAGE"
+  | "VIDEO"
+  | "TTS"
+  | "SUBTITLE"
+  | "COMPOSE";
+
+/** PRD §21: PENDING -> RUNNING -> SUCCESS, or RUNNING -> RETRY -> ... -> FAILED. */
+export type TaskStatus = "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "RETRY";
+
+export interface Asset {
+  id: string;
+  project_id: string;
+  episode_id: string | null;
+  shot_id: string | null;
+  type: AssetType;
+  /** Signed and expiring (PRD §27); re-fetched on each storyboard read. */
+  url: string | null;
+  storage_key: string;
+  duration: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface GenerationTask {
+  id: string;
+  project_id: string;
+  episode_id: string | null;
+  shot_id: string | null;
+  task_type: TaskType;
+  status: TaskStatus;
+  provider: string | null;
+  model: string | null;
+  retry_count: number;
+  max_retries: number;
+  error_message: string | null;
+  input_payload: Record<string, unknown>;
+  output_payload: Record<string, unknown>;
+  estimated_cost: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  /** Present on GET /tasks/{id} once the task succeeded. */
+  asset?: Asset | null;
+}
+
+/** One shot's picture state, as returned inside a storyboard response. */
+export interface ShotImageState {
+  shot_id: string;
+  shot_number: number;
+  scene_id: string;
+  status: ShotStatus;
+  image_asset_id: string | null;
+  asset: Asset | null;
+  image_count: number;
+  latest_task: GenerationTask | null;
+}
+
+export interface TaskAccepted {
+  task: GenerationTask;
+  /** True when an identical task was already in flight (PRD §21 idempotency). */
+  reused: boolean;
+}
+
+export interface TaskListResponse {
+  items: GenerationTask[];
+  totals: { tasks: number; by_status: Record<TaskStatus, number> };
+}
+
+/** An asset plus the shot labels the 素材 grid needs to caption its tiles. */
+export interface AssetListItem extends Asset {
+  shot_number: number | null;
+  scene_id: string | null;
+}
+
+export interface AssetListResponse {
+  items: AssetListItem[];
+  totals: { assets: number; by_type: Record<AssetType, number> };
+}
+
+export interface BatchImageResponse {
+  episode_id: string;
+  queued: number;
+  skipped_existing: number;
+  shots_total: number;
+  tasks: GenerationTask[];
+  provider: string;
+  model: string;
 }
 
 // ------------------------------------------------------------------- inputs
@@ -505,6 +603,59 @@ export const GENERATION_BADGE_CLASS: Record<GenerationStatus, string> = {
   SUCCEEDED: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   FAILED: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
 };
+
+/** PRD §21's task states. RETRY is shown as in-flight: the task is still alive. */
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  PENDING: "排队中",
+  RUNNING: "生成中",
+  SUCCESS: "已完成",
+  FAILED: "失败",
+  RETRY: "重试中",
+};
+
+export const TASK_STATUS_BADGE_CLASS: Record<TaskStatus, string> = {
+  PENDING: "bg-slate-500/15 text-slate-400 ring-slate-500/30",
+  RUNNING: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+  SUCCESS: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  FAILED: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
+  RETRY: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+};
+
+export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
+  IMAGE: "图片",
+  VIDEO: "视频",
+  AUDIO: "配音",
+  BGM: "背景音乐",
+  SFX: "音效",
+  SUBTITLE: "字幕",
+  FINAL_VIDEO: "成片",
+};
+
+export const ASSET_TYPE_ORDER: AssetType[] = [
+  "IMAGE",
+  "VIDEO",
+  "AUDIO",
+  "BGM",
+  "SFX",
+  "SUBTITLE",
+  "FINAL_VIDEO",
+];
+
+export const TASK_TYPE_LABELS: Record<TaskType, string> = {
+  STORY_ANALYSIS: "故事解析",
+  SCRIPT: "剧本生成",
+  STORYBOARD: "分镜生成",
+  IMAGE: "图片生成",
+  VIDEO: "视频生成",
+  TTS: "配音生成",
+  SUBTITLE: "字幕生成",
+  COMPOSE: "合成",
+};
+
+/** True while a task can still change state -- the UI polls only these. */
+export function isTaskLive(status: TaskStatus): boolean {
+  return status === "PENDING" || status === "RUNNING" || status === "RETRY";
+}
 
 export const EPISODE_STATUS_LABELS: Record<EpisodeStatus, string> = {
   DRAFT: "草稿",

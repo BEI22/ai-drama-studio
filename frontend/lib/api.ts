@@ -16,6 +16,9 @@ import type {
   AnalyzeStatus,
   Character,
   CharacterWriteInput,
+  AssetListResponse,
+  AssetType,
+  BatchImageResponse,
   ConsistencyResponse,
   DeletedResult,
   Episode,
@@ -23,6 +26,7 @@ import type {
   EpisodeListResponse,
   EpisodePlanMeta,
   EpisodeUpdateInput,
+  GenerationTask,
   LocationWriteInput,
   ScriptResponse,
   ScriptUpdateInput,
@@ -31,12 +35,21 @@ import type {
   StoryBibleResponse,
   StoryboardResponse,
   StoryLocation,
+  TaskAccepted,
+  TaskListResponse,
+  TaskStatus,
+  TaskType,
 } from "@/types/api";
 
 // Re-exported so components have a single import site for domain types.
 export type {
   AnalysisStatus,
   AnalyzeStatus,
+  Asset,
+  AssetListItem,
+  AssetListResponse,
+  AssetType,
+  BatchImageResponse,
   BibleMeta,
   CameraMovement,
   Character,
@@ -53,6 +66,7 @@ export type {
   EpisodeStatus,
   EpisodeUpdateInput,
   GenerationStatus,
+  GenerationTask,
   IssueSeverity,
   LocationWriteInput,
   SceneStoryboard,
@@ -63,6 +77,7 @@ export type {
   Shot,
   ShotDraft,
   ShotSize,
+  ShotImageState,
   ShotStatus,
   ShotUpdateInput,
   StoryBibleContent,
@@ -70,6 +85,10 @@ export type {
   StoryLocation,
   StoryboardContent,
   StoryboardResponse,
+  TaskAccepted,
+  TaskListResponse,
+  TaskStatus,
+  TaskType,
   UsageRecord,
 } from "@/types/api";
 
@@ -492,6 +511,56 @@ export const api = {
   /** Strict validation: an unknown enum value is rejected, never coerced. */
   updateShot: (shotId: string, input: ShotUpdateInput) =>
     request<Shot>(`/shots/${shotId}`, { method: "PATCH", body: input }),
+
+  // ------------------------------------------------------- media (Phase 5)
+  /** Queue one shot's image. Returns 409 when the shot already has one; use
+   *  ``regenerateShotImage`` to re-roll it deliberately. */
+  generateShotImage: (shotId: string) =>
+    request<TaskAccepted>(`/shots/${shotId}/image/generate`, { method: "POST" }),
+
+  /** Re-roll a shot's image. The previous asset stays on disk. */
+  regenerateShotImage: (shotId: string) =>
+    request<TaskAccepted>(`/shots/${shotId}/regenerate`, { method: "POST" }),
+
+  /** Fill in every shot of an episode that has no picture yet. */
+  generateEpisodeImages: (episodeId: string) =>
+    request<BatchImageResponse>(`/episodes/${episodeId}/images/generate`, { method: "POST" }),
+
+  generateCharacterReference: (characterId: string, force = false) =>
+    request<TaskAccepted>(
+      `/characters/${characterId}/reference/generate${force ? "?force=true" : ""}`,
+      { method: "POST" },
+    ),
+
+  generateLocationReference: (locationId: string, force = false) =>
+    request<TaskAccepted>(
+      `/locations/${locationId}/reference/generate${force ? "?force=true" : ""}`,
+      { method: "POST" },
+    ),
+
+  /** Every asset the project has produced, newest first (backs the 素材 page). */
+  listAssets: (projectId: string, filters: { assetType?: AssetType; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.assetType) query.set("asset_type", filters.assetType);
+    if (filters.limit) query.set("limit", String(filters.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<AssetListResponse>(`/projects/${projectId}/assets${suffix}`);
+  },
+
+  /** Poll a task. The response carries the asset once it has succeeded. */
+  getTask: (taskId: string) => request<GenerationTask>(`/tasks/${taskId}`),
+
+  listTasks: (projectId: string, filters: { taskType?: TaskType; status?: TaskStatus } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.taskType) query.set("task_type", filters.taskType);
+    if (filters.status) query.set("status", filters.status);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<TaskListResponse>(`/projects/${projectId}/tasks${suffix}`);
+  },
+
+  /** Re-queue a failed task. 409 if it already succeeded or is still running. */
+  retryTask: (taskId: string) =>
+    request<TaskAccepted>(`/tasks/${taskId}/retry`, { method: "POST" }),
 
   /** Free and deterministic -- re-audits stored data without calling a model. */
   checkConsistency: (episodeId: string) =>

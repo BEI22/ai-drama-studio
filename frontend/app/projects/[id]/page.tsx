@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { EpisodesTab } from "@/components/episode-agent";
 import { ErrorState, LoadingState, SignInRequired } from "@/components/states";
+import { AssetsTab, TasksTab } from "@/components/media-tabs";
 import {
   AnalysisBadge,
   AnalyzePanel,
@@ -31,7 +32,7 @@ const TABS = [
 ] as const;
 
 /** Highest phase delivered so far -- drives the "not implemented" placeholders. */
-const DELIVERED_PHASE = 4;
+const DELIVERED_PHASE = 5;
 
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -220,6 +221,7 @@ export default function ProjectDetailPage() {
               onCharactersChanged={(next) => {
                 if (bible) setBible({ ...bible, characters: next });
               }}
+              onReferenceChanged={reloadBible}
             />
           ) : tab === "locations" ? (
             <LocationsTab
@@ -228,6 +230,7 @@ export default function ProjectDetailPage() {
               onLocationsChanged={(next) => {
                 if (bible) setBible({ ...bible, locations: next });
               }}
+              onReferenceChanged={reloadBible}
             />
           ) : tab === "episodes" ? (
             <EpisodesTab
@@ -237,6 +240,10 @@ export default function ProjectDetailPage() {
               locations={bible?.locations ?? []}
               onEpisodesChanged={load}
             />
+          ) : tab === "assets" ? (
+            <AssetsTab projectId={project.id} />
+          ) : tab === "tasks" ? (
+            <TasksTab projectId={project.id} />
           ) : (
             <SettingsTab project={project} onChanged={load} />
           )}

@@ -24,6 +24,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState, ErrorState, FormError, LoadingState } from "@/components/states";
+import {
+  EpisodeImageToolbar,
+  ReferenceImageButton,
+  ShotImagePanel,
+} from "@/components/media-panel";
 import { api, ApiError } from "@/lib/api";
 import type {
   AnalysisStatus,
@@ -33,6 +38,7 @@ import type {
   Episode,
   ScriptResponse,
   Shot,
+  ShotImageState,
   ShotUpdateInput,
   StoryLocation,
   StoryboardResponse,
@@ -713,6 +719,7 @@ function EpisodeDetail({
         />
       ) : (
         <StoryboardView
+          projectId={episode.project_id}
           response={board}
           sceneLocations={sceneLocations}
           consistency={consistency ?? board?.consistency ?? null}
@@ -882,12 +889,14 @@ function ScriptView({
 // Storyboard
 // =========================================================================== #
 function StoryboardView({
+  projectId,
   response,
   sceneLocations,
   consistency,
   onRecheck,
   onShotSaved,
 }: {
+  projectId: string;
   response: StoryboardResponse | null;
   sceneLocations: Record<string, string>;
   consistency: { issues: ConsistencyIssue[]; checked_shots: number; checked_scenes: number } | null;
@@ -895,6 +904,7 @@ function StoryboardView({
   onShotSaved: () => void;
 }) {
   const shots = response?.shots ?? [];
+  const media = response?.media ?? {};
 
   const groups = useMemo(() => {
     const byScene = new Map<string, Shot[]>();
@@ -933,6 +943,13 @@ function StoryboardView({
     <div className="space-y-4">
       <ConsistencyPanel report={consistency} onRecheck={onRecheck} />
 
+      <EpisodeImageToolbar
+        episodeId={response?.episode_id ?? ""}
+        media={media}
+        shotCount={shots.length}
+        onChanged={onShotSaved}
+      />
+
       <div className="panel flex flex-wrap items-center gap-x-6 gap-y-1 px-5 py-3 text-[11px] text-slate-400">
         <span>{groups.length} 个场景</span>
         <span>{shots.length} 个镜头</span>
@@ -964,8 +981,10 @@ function StoryboardView({
               {sceneShots.map((shot) => (
                 <ShotCard
                   key={shot.id}
+                  projectId={projectId}
                   shot={shot}
                   issues={issuesByPosition.get(`${shot.scene_id}#${shot.shot_number}`) ?? []}
+                  media={media[shot.id]}
                   onSaved={onShotSaved}
                 />
               ))}
@@ -979,12 +998,16 @@ function StoryboardView({
 
 /** One editable shot row (PRD section 11). */
 function ShotCard({
+  projectId,
   shot,
   issues,
+  media,
   onSaved,
 }: {
+  projectId: string;
   shot: Shot;
   issues: ConsistencyIssue[];
+  media: ShotImageState | undefined;
   onSaved: () => void;
 }) {
   const [duration, setDuration] = useState(shot.duration);
@@ -1046,9 +1069,9 @@ function ShotCard({
 
   return (
     <article
-      className={`panel space-y-3 p-4 ${
-        errors.length > 0 ? "border-rose-500/40" : ""
-      }`}
+      data-testid="shot-card"
+      data-shot-id={shot.id}
+      className={`panel space-y-3 p-4 ${errors.length > 0 ? "border-rose-500/40" : ""}`}
     >
       <header className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[11px] text-slate-500">
@@ -1070,6 +1093,10 @@ function ShotCard({
       {shot.visual_description ? (
         <p className="text-xs leading-relaxed text-slate-300">{shot.visual_description}</p>
       ) : null}
+
+      {/* Phase 5: the shot's picture, its task state, and the actions that change
+          it. Generated images land here as the worker finishes them. */}
+      <ShotImagePanel state={media} onChanged={onSaved} />
 
       {(errors.length > 0 ? errors : others).length > 0 ? (
         <ul className="space-y-1">

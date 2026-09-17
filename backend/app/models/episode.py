@@ -13,6 +13,8 @@ from app.core.database import Base, TimestampMixin
 from app.models.enums import EpisodeStatus, GenerationStatus
 
 if TYPE_CHECKING:  # pragma: no cover
+    from app.models.asset import Asset
+    from app.models.generation_task import GenerationTask
     from app.models.project import Project
     from app.models.shot import Shot
 
@@ -66,4 +68,16 @@ class Episode(Base, TimestampMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="Shot.shot_number",
+    )
+    # Phase 5: assets are attached to the episode that produced them (shot
+    # images), and the task log is per episode so the UI can show progress.
+    assets: Mapped[list[Asset]] = relationship(
+        back_populates="episode",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    generation_tasks: Mapped[list[GenerationTask]] = relationship(
+        back_populates="episode",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
