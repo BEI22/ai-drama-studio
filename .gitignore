@@ -1,10 +1,15 @@
 # --- project root -----------------------------------------------------------
+# NOTE: these MUST stay root-anchored ("/storage/", not "storage/").
+# An unanchored "storage/" also matches backend/app/storage/ -- a real source
+# package -- which silently dropped it from the repo and broke every fresh
+# clone (`app.main` imports `app.storage`). Verified both ways with
+# `git check-ignore -v` after editing.
 .env
 .env.local
 .env.*.local
-storage/
+/storage/
 *.log
-logs/
+/logs/
 
 # --- python -----------------------------------------------------------------
 __pycache__/
